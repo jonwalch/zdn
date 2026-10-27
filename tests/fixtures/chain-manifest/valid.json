@@ -1,0 +1,48 @@
+{
+  "apiVersion": "zdn-consensus/v1alpha1",
+  "ruleset": "zakura-configured-testnet/v1",
+  "networkKind": "custom-testnet",
+  "networkMagic": "a1b2c3d4",
+  "genesis": {
+    "height": 0,
+    "hash": "abababababababababababababababababababababababababababababababab",
+    "bytesSha256": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "bytesLength": 100
+  },
+  "seedBlocks": [],
+  "checkpoints": [],
+  "upgrades": {
+    "BeforeOverwinter": 1,
+    "Overwinter": 1,
+    "Sapling": 1,
+    "Blossom": 1,
+    "Heartwood": 1,
+    "Canopy": 1,
+    "NU5": 1,
+    "NU6": 1,
+    "NU6.1": 1,
+    "NU6.2": 1,
+    "NU6.3": 1,
+    "NU7": null
+  },
+  "subsidy": {
+    "slowStartInterval": 0,
+    "preBlossomHalvingInterval": 840000,
+    "fundingStreams": [],
+    "lockboxDisbursements": [
+      {
+        "scriptHash": "1212121212121212121212121212121212121212",
+        "amount": 0
+      }
+    ],
+    "initialNsmValueBalance": null,
+    "allowUnshieldedCoinbaseSpends": false
+  },
+  "difficulty": {
+    "targetDifficultyLimitCompact": "1f07ffff",
+    "proofOfWork": "disabled",
+    "maxBlockTimeStartHeight": 653606
+  },
+  "temporaryOrchardDisablingHeight": 4048500,
+  "experimentalSlh": null
+}

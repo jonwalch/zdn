@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+echo "Preparing local build prerequisites"
+started=$SECONDS
+missing=()
+for package in build-essential ca-certificates curl git; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+        missing+=("$package")
+    fi
+done
+if ((${#missing[@]})); then
+    sudo apt-get update
+    sudo apt-get install -y "${missing[@]}"
+fi
+echo "Build prerequisites ready in $((SECONDS - started))s"
+
+echo "Installing the Rust toolchain from rust-toolchain.toml"
+started=$SECONDS
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+if [[ ! -x "$CARGO_HOME/bin/rustup" ]]; then
+    installer=$(mktemp)
+    trap 'rm -f "$installer"' EXIT
+    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+        https://sh.rustup.rs -o "$installer"
+    sh "$installer" -y --no-modify-path --default-toolchain none
+    rm -f "$installer"
+    trap - EXIT
+fi
+source "$CARGO_HOME/env"
+rustup toolchain install
+rustup show active-toolchain
+echo "Rust toolchain ready in $((SECONDS - started))s"
+
+# Amp and supervised services use fresh non-interactive login shells.
+profile_marker='# zdn orb: Rust toolchain environment'
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+    {
+        printf '\n%s\n' "$profile_marker"
+        printf 'source %q\n' "$CARGO_HOME/env"
+    } >> "$HOME/.bash_profile"
+fi
+
+echo "Fetching locked Cargo dependencies (no AWS, node builds, or services)"
+started=$SECONDS
+cargo fetch --locked
+echo "Cargo dependencies ready in $((SECONDS - started))s"

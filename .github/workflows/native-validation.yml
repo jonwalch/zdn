@@ -1,0 +1,100 @@
+name: Native validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            host: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            host: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            host: x86_64-apple-darwin
+          - runner: macos-15
+            host: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_HOST: ${{ matrix.host }}
+      CARGO_TERM_COLOR: always
+      # Do not inherit a cross-compilation target from the runner environment.
+      CARGO_BUILD_TARGET: ${{ matrix.host }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install exact repository toolchain and record native host
+        run: |
+          toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
+          export RUSTUP_TOOLCHAIN="$toolchain"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          echo "Runner: $RUNNER_OS / $RUNNER_ARCH"
+          uname -a
+          if [[ "$RUNNER_OS" == macOS ]]; then sw_vers; else cat /etc/os-release; fi
+          git rev-parse HEAD
+          git status --short
+          git hash-object Cargo.lock rust-toolchain.toml
+          rustup show active-toolchain
+          rustc -vV
+          cargo -V
+          rustfmt -V
+          cargo clippy -V
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$EXPECTED_HOST"
+          # Check the running machine too, not just the selected compiler target.
+          case "$EXPECTED_HOST:$(uname -m)" in
+            x86_64-unknown-linux-gnu:x86_64|x86_64-apple-darwin:x86_64|aarch64-unknown-linux-gnu:aarch64|aarch64-apple-darwin:arm64) ;;
+            *) echo 'Native runner architecture mismatch' >&2; exit 1 ;;
+          esac
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run full locked ordinary suite with default SIGINT disposition
+        run: |
+          python3 - <<'PY'
+          import os
+          import signal
+
+          signal.signal(signal.SIGINT, signal.SIG_DFL)
+          os.execvp("cargo", ["cargo", "test", "--locked"])
+          PY
+
+      - name: Strict all-target Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Build locked release executable
+        run: cargo build --release --locked
+
+      - name: Record executable identity and exercise no-cloud controls
+        run: |
+          binary="target/$EXPECTED_HOST/release/zdn"
+          file "$binary"
+          shasum -a 256 "$binary" Cargo.lock rust-toolchain.toml
+          "$binary" --version
+          "$binary" --help
+          "$binary" __runtime-capabilities
+          "$binary" __runtime-capabilities --require zdn-build-export/v1alpha2
+          if "$binary" __runtime-capabilities --require zdn-build-export/v999; then
+            echo 'Unsupported capability unexpectedly accepted' >&2
+            exit 1
+          fi

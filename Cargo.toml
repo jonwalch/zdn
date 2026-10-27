@@ -1,0 +1,61 @@
+[package]
+name = "zdn"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+description = "Create and manage isolated Zcash development networks"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[features]
+profiling = ["dep:tracing", "dep:tracing-subscriber"]
+
+[dependencies]
+base64 = "0.22"
+bs58 = { version = "=0.5.1", features = ["check"] }
+clap = { version = "4.5", features = ["derive"] }
+eyre = "0.6"
+fs2 = "0.4"
+glob = "0.3"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3.20"
+uuid = { version = "1.16", features = ["v4", "serde"] }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+flate2 = "1.0"
+toml = "0.8"
+ctrlc = { version = "3.5", features = ["termination"] }
+prost = "=0.14.4"
+ring = "=0.17.14"
+rusqlite = { version = "=0.37.0", features = ["bundled", "limits"] }
+tokio = { version = "=1.52.3", features = ["rt", "time", "net"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
+tonic-prost = "=0.14.6"
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "registry", "std"], optional = true }
+
+[dev-dependencies]
+h2 = "0.4"
+http = "1"
+bytes = "1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal", "process", "fs", "user"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { version = "=1.1.5", features = ["fs"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "=1.1.5", features = ["process", "pty"] }
+
+[profile.release]
+strip = "symbols"
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="640" viewBox="0 0 1040 640" role="img" aria-labelledby="title description">
+  <title id="title">ZDN on your computer and in AWS</title>
+  <desc id="description">ZDN runs on your computer with configuration, source files, recovery records and optional wallet keys. It uses AWS APIs to manage resources and Session Manager to connect to private nodes. CodeBuild builds node images and ECR stores them. EC2 runs the nodes and EBS disks store blockchain data. S3 stores AWS state and build files; KMS encrypts state and secret settings. Wallet signing keys stay on your computer.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8Z" fill="#526276"/></marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #172b40; }
+      .zone { font-size: 25px; font-weight: 700; }
+      .heading { font-size: 21px; font-weight: 650; }
+      .body { font-size: 19px; }
+      .label { font-size: 16px; fill: #42566d; }
+      .line { fill: none; stroke: #526276; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1040" height="640" fill="#ffffff"/>
+  <rect x="20" y="22" width="390" height="558" fill="#f1f6fc" stroke="#c1d1e2"/>
+  <rect x="530" y="22" width="490" height="558" fill="#f6f7f9" stroke="#cbd2da"/>
+  <text x="46" y="67" class="zone">Your computer</text>
+  <text x="556" y="67" class="zone">Your AWS account</text>
+
+  <rect x="46" y="108" width="338" height="150" fill="#ffffff" stroke="#9ab4ce"/>
+  <text x="66" y="144" class="heading">ZDN</text>
+  <text x="66" y="177" class="body">Starts and removes the network</text>
+  <text x="66" y="206" class="body">Runs AWS CLI and Pulumi</text>
+  <text x="66" y="235" class="body">Connects your test program</text>
+
+  <rect x="46" y="308" width="338" height="246" fill="#ffffff" stroke="#9ab4ce"/>
+  <text x="66" y="344" class="heading">Your files</text>
+  <text x="66" y="379" class="body">Configuration and node source</text>
+  <text x="66" y="408" class="body">Chain inputs and saved requests</text>
+  <text x="66" y="437" class="body">Recovery records and receipts</text>
+  <path d="M66 459H364" stroke="#d4dfeb"/>
+  <text x="66" y="492" class="heading">Optional wallet</text>
+  <text x="66" y="524" class="body">Signing keys and payment records</text>
+
+  <rect x="556" y="108" width="438" height="116" fill="#ffffff" stroke="#b8c2ce"/>
+  <text x="576" y="143" class="heading">Build the node image</text>
+  <text x="576" y="176" class="body">CodeBuild builds the uploaded source.</text>
+  <text x="576" y="205" class="body">ECR stores the container image.</text>
+
+  <rect x="556" y="270" width="438" height="123" fill="#ffffff" stroke="#b8c2ce"/>
+  <text x="576" y="305" class="heading">Run the network</text>
+  <text x="576" y="338" class="body">EC2 runs the private Zakura nodes.</text>
+  <text x="576" y="367" class="body">EBS disks store blockchain data.</text>
+
+  <rect x="556" y="439" width="438" height="115" fill="#ffffff" stroke="#b8c2ce"/>
+  <text x="576" y="474" class="heading">Keep AWS state and build files</text>
+  <text x="576" y="507" class="body">S3 stores state, source copies and results.</text>
+  <text x="576" y="536" class="body">KMS encrypts state and secret settings.</text>
+
+  <path d="M384 159H551" class="line"/>
+  <text x="421" y="145" class="label">AWS APIs</text>
+  <path d="M384 226H454V332H551" class="line"/>
+  <text x="423" y="357" class="label">Private link</text>
+  <text x="417" y="379" class="label">through SSM</text>
+  <path d="M774 224V264" class="line"/>
+  <text x="790" y="252" class="label">image</text>
+
+  <text x="30" y="615" class="body">Wallet signing keys stay local. Closing ZDN does not stop AWS resources or their charges.</text>
+</svg>

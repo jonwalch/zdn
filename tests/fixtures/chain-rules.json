@@ -1,0 +1,24 @@
+{
+  "apiVersion": "zakura-chain-rules/v1",
+  "ruleset": "zakura-configured-testnet/v1",
+  "networkKind": "custom-testnet",
+  "rules": {
+    "networkMagic": "a1b2c3d4",
+    "genesisHash": "abababababababababababababababababababababababababababababababab",
+    "checkpoints": [{"height": 0, "hash": "abababababababababababababababababababababababababababababababab"}],
+    "activationHeights": [{"height": 0, "upgrade": "Genesis"}, {"height": 1, "upgrade": "NU6.3"}],
+    "subsidy": {
+      "slowStartInterval": 0,
+      "slowStartShift": 0,
+      "preBlossomHalvingInterval": 840000,
+      "postBlossomHalvingInterval": 1680000,
+      "fundingStreams": [],
+      "lockboxDisbursements": [{"scriptHash": "1212121212121212121212121212121212121212", "amount": 0}],
+      "initialNsmValueBalance": null,
+      "allowUnshieldedCoinbaseSpends": false
+    },
+    "difficulty": {"targetDifficultyLimitCompact": "1f07ffff", "proofOfWork": "disabled", "maxBlockTimeStartHeight": 653606},
+    "temporaryOrchardDisablingHeight": 4048500,
+    "experimental": {"pq": null, "sqisign": null}
+  }
+}

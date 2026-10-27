@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "catalog": "pulumi-2026-10-14",
+  "sources": [
+    "https://github.com/pulumi/pulumi/releases/tag/v3.268.0",
+    "https://github.com/pulumi/pulumi-yaml/releases/tag/v1.38.10",
+    "https://github.com/pulumi/pulumi-aws/releases/tag/v7.50.0"
+  ],
+  "platforms": {
+    "darwin-amd64": [
+      {
+        "name": "pulumi",
+        "version": "3.268.0",
+        "url": "https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-darwin-x64.tar.gz",
+        "sha256": "b0c4e37e9fd9573d3e09b65606124486ef2c2049db1237ca6037c4204c6a99a8",
+        "max_download_bytes": 118144483,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi/pulumi",
+            "install_path": "bin/pulumi"
+          }
+        ],
+        "allowed_unused_executables": [
+          "pulumi/pulumi-language-go",
+          "pulumi/pulumi-language-nodejs",
+          "pulumi/pulumi-language-bun",
+          "pulumi/pulumi-language-python",
+          "pulumi/pulumi-language-pcl",
+          "pulumi/pulumi-resource-pulumi-nodejs",
+          "pulumi/pulumi-resource-pulumi-python",
+          "pulumi/pulumi-language-python-exec",
+          "pulumi/pulumi-watch",
+          "pulumi/pulumi-language-dotnet",
+          "pulumi/pulumi-language-java",
+          "pulumi/pulumi-language-yaml"
+        ]
+      },
+      {
+        "name": "pulumi-language-yaml",
+        "version": "1.38.10",
+        "url": "https://github.com/pulumi/pulumi-yaml/releases/download/v1.38.10/pulumi-language-yaml-v1.38.10-darwin-amd64.tar.gz",
+        "sha256": "1558d61c5058ea43e933bc61167e464580bf08e160c9c816c2012e42283bd932",
+        "max_download_bytes": 14163455,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-language-yaml",
+            "install_path": "bin/pulumi-language-yaml"
+          }
+        ],
+        "allowed_unused_executables": []
+      },
+      {
+        "name": "pulumi-resource-aws",
+        "version": "7.50.0",
+        "url": "https://github.com/pulumi/pulumi-aws/releases/download/v7.50.0/pulumi-resource-aws-v7.50.0-darwin-amd64.tar.gz",
+        "sha256": "b89ca5806c3e59e02633b2e35eb71f149874986e99962f53b8f390ce793a5e50",
+        "max_download_bytes": 199328992,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-resource-aws",
+            "install_path": "pulumi-home/plugins/resource-aws-v7.50.0/pulumi-resource-aws"
+          }
+        ],
+        "allowed_unused_executables": []
+      }
+    ],
+    "darwin-arm64": [
+      {
+        "name": "pulumi",
+        "version": "3.268.0",
+        "url": "https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-darwin-arm64.tar.gz",
+        "sha256": "ef509a84f0ad8f4ed0ec04be957e6688f094eb9a1cdc676a4864103d66d8a4e9",
+        "max_download_bytes": 108842889,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi/pulumi",
+            "install_path": "bin/pulumi"
+          }
+        ],
+        "allowed_unused_executables": [
+          "pulumi/pulumi-language-go",
+          "pulumi/pulumi-language-nodejs",
+          "pulumi/pulumi-language-bun",
+          "pulumi/pulumi-language-python",
+          "pulumi/pulumi-language-pcl",
+          "pulumi/pulumi-resource-pulumi-nodejs",
+          "pulumi/pulumi-resource-pulumi-python",
+          "pulumi/pulumi-language-python-exec",
+          "pulumi/pulumi-watch",
+          "pulumi/pulumi-language-dotnet",
+          "pulumi/pulumi-language-java",
+          "pulumi/pulumi-language-yaml"
+        ]
+      },
+      {
+        "name": "pulumi-language-yaml",
+        "version": "1.38.10",
+        "url": "https://github.com/pulumi/pulumi-yaml/releases/download/v1.38.10/pulumi-language-yaml-v1.38.10-darwin-arm64.tar.gz",
+        "sha256": "264cbcaaa3d5521dd01bf39d4d6ea60f756d9d59aec3dad2808c8ca2ee3199b6",
+        "max_download_bytes": 13095395,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-language-yaml",
+            "install_path": "bin/pulumi-language-yaml"
+          }
+        ],
+        "allowed_unused_executables": []
+      },
+      {
+        "name": "pulumi-resource-aws",
+        "version": "7.50.0",
+        "url": "https://github.com/pulumi/pulumi-aws/releases/download/v7.50.0/pulumi-resource-aws-v7.50.0-darwin-arm64.tar.gz",
+        "sha256": "7c8bafecaeb3aac48543ff8853837503a9d61feee9af6c883689616d113cf2ab",
+        "max_download_bytes": 185758039,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-resource-aws",
+            "install_path": "pulumi-home/plugins/resource-aws-v7.50.0/pulumi-resource-aws"
+          }
+        ],
+        "allowed_unused_executables": []
+      }
+    ],
+    "linux-amd64": [
+      {
+        "name": "pulumi",
+        "version": "3.268.0",
+        "url": "https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-linux-x64.tar.gz",
+        "sha256": "903cafeaa9f6327e4bf53a8b7b99ae660f26198acfa804a2f982bf5de3f1de0b",
+        "max_download_bytes": 119816773,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi/pulumi",
+            "install_path": "bin/pulumi"
+          }
+        ],
+        "allowed_unused_executables": [
+          "pulumi/pulumi-language-go",
+          "pulumi/pulumi-language-nodejs",
+          "pulumi/pulumi-language-bun",
+          "pulumi/pulumi-language-python",
+          "pulumi/pulumi-language-pcl",
+          "pulumi/pulumi-resource-pulumi-nodejs",
+          "pulumi/pulumi-resource-pulumi-python",
+          "pulumi/pulumi-language-python-exec",
+          "pulumi/pulumi-watch",
+          "pulumi/pulumi-language-dotnet",
+          "pulumi/pulumi-language-java",
+          "pulumi/pulumi-language-yaml"
+        ]
+      },
+      {
+        "name": "pulumi-language-yaml",
+        "version": "1.38.10",
+        "url": "https://github.com/pulumi/pulumi-yaml/releases/download/v1.38.10/pulumi-language-yaml-v1.38.10-linux-amd64.tar.gz",
+        "sha256": "87d90ad723bf00585cecf3c0c9f91807deb69fbcb0f1a7b4257f44bfac7be78c",
+        "max_download_bytes": 13907240,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-language-yaml",
+            "install_path": "bin/pulumi-language-yaml"
+          }
+        ],
+        "allowed_unused_executables": []
+      },
+      {
+        "name": "pulumi-resource-aws",
+        "version": "7.50.0",
+        "url": "https://github.com/pulumi/pulumi-aws/releases/download/v7.50.0/pulumi-resource-aws-v7.50.0-linux-amd64.tar.gz",
+        "sha256": "fc468cf6e1b9494d8d6a98b9ef1db73c7d180af436f4241b8fdb123a46f72e3d",
+        "max_download_bytes": 194354465,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-resource-aws",
+            "install_path": "pulumi-home/plugins/resource-aws-v7.50.0/pulumi-resource-aws"
+          }
+        ],
+        "allowed_unused_executables": []
+      }
+    ],
+    "linux-arm64": [
+      {
+        "name": "pulumi",
+        "version": "3.268.0",
+        "url": "https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-linux-arm64.tar.gz",
+        "sha256": "47c1b9283b7997337b0a373d240f771a6aeb42ee5dd2e213c14604247c7ff15a",
+        "max_download_bytes": 107916344,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi/pulumi",
+            "install_path": "bin/pulumi"
+          }
+        ],
+        "allowed_unused_executables": [
+          "pulumi/pulumi-language-go",
+          "pulumi/pulumi-language-nodejs",
+          "pulumi/pulumi-language-bun",
+          "pulumi/pulumi-language-python",
+          "pulumi/pulumi-language-pcl",
+          "pulumi/pulumi-resource-pulumi-nodejs",
+          "pulumi/pulumi-resource-pulumi-python",
+          "pulumi/pulumi-language-python-exec",
+          "pulumi/pulumi-watch",
+          "pulumi/pulumi-language-dotnet",
+          "pulumi/pulumi-language-java",
+          "pulumi/pulumi-language-yaml"
+        ]
+      },
+      {
+        "name": "pulumi-language-yaml",
+        "version": "1.38.10",
+        "url": "https://github.com/pulumi/pulumi-yaml/releases/download/v1.38.10/pulumi-language-yaml-v1.38.10-linux-arm64.tar.gz",
+        "sha256": "0aa3515bbbfe152f815fa4e521d461483724ecac0651d740f4ad4777cb42c3b9",
+        "max_download_bytes": 12522631,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-language-yaml",
+            "install_path": "bin/pulumi-language-yaml"
+          }
+        ],
+        "allowed_unused_executables": []
+      },
+      {
+        "name": "pulumi-resource-aws",
+        "version": "7.50.0",
+        "url": "https://github.com/pulumi/pulumi-aws/releases/download/v7.50.0/pulumi-resource-aws-v7.50.0-linux-arm64.tar.gz",
+        "sha256": "5a950bbe788afe7b0a15f3e3e92f9324be6fbaaef1c342f227732a4303591ce3",
+        "max_download_bytes": 173852080,
+        "max_unpacked_bytes": 2147483648,
+        "files": [
+          {
+            "archive_path": "pulumi-resource-aws",
+            "install_path": "pulumi-home/plugins/resource-aws-v7.50.0/pulumi-resource-aws"
+          }
+        ],
+        "allowed_unused_executables": []
+      }
+    ]
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "accepted": [
+    {
+      "kind": "p2pkh",
+      "hash": "0000000000000000000000000000000000000000",
+      "address": "tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma"
+    },
+    {
+      "kind": "p2pkh",
+      "hash": "000102030405060708090a0b0c0d0e0f10111213",
+      "address": "tm9iNYCVAhLLa4rJtfqqHauR5xL1REdpiDs"
+    },
+    {
+      "kind": "p2pkh",
+      "hash": "ffffffffffffffffffffffffffffffffffffffff",
+      "address": "tmZ3xKHCq5AkyZKPRdaTBUc3TV9Xqy8fet6"
+    },
+    {
+      "kind": "p2sh",
+      "hash": "0000000000000000000000000000000000000000",
+      "address": "t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2"
+    },
+    {
+      "kind": "p2sh",
+      "hash": "000102030405060708090a0b0c0d0e0f10111213",
+      "address": "t26YqBabLj2kpZUPd3xCBhVHucMSV83GWSw"
+    },
+    {
+      "kind": "p2sh",
+      "hash": "ffffffffffffffffffffffffffffffffffffffff",
+      "address": "t2VtQxfK16sBE3wUA1gp5bBvH9AxusATf3B"
+    }
+  ],
+  "rejected": [
+    {
+      "reason": "mainnet p2pkh",
+      "address": "t1HsdDMzmJfq4vc7T17XYjEkLMLvbgM1fCi"
+    },
+    {
+      "reason": "mainnet p2sh",
+      "address": "t3JZe8uVCra9T1mot8DC99s7GVsDKFy2Xa2"
+    },
+    {
+      "reason": "unknown version",
+      "address": "t2VtSAgtdSDDhNuXi5NXWBcZhErhRq4ayo7"
+    },
+    {
+      "reason": "short p2pkh",
+      "address": "CjB8ZXBJiAbHfkvK6pKKC1S1vgivBci9Xc"
+    },
+    {
+      "reason": "long p2pkh",
+      "address": "4wTsTc4hhKo2MNwzdy4SY8CeMJsCtqZMPsMxY"
+    },
+    {
+      "reason": "short p2sh",
+      "address": "CZRNFzgL7HKXKUkMz77ALBzAGYaBQ33mJy"
+    },
+    {
+      "reason": "long p2sh",
+      "address": "4tBqVVfhGa4WkQvKtr82cNDhsdD3DUuRrcfKE"
+    },
+    {
+      "reason": "bitcoin p2pkh",
+      "address": "112D2adLM3UKy4Z4giRbReR6gjWuvHUqB"
+    }
+  ]
+}
