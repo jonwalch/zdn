@@ -83,6 +83,24 @@ fn main() {
     })
 }
 
+fn runtime() -> &'static [u8] {
+    static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+    BYTES.get_or_init(|| {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("zdn");
+        fs::copy(env!("CARGO_BIN_EXE_zdn"), &path).unwrap();
+        // Keep the real supervisor protocol without hashing debug information
+        // during the cancellation fixture's bounded startup wait.
+        assert!(Command::new("strip")
+            .arg("--strip-debug")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        fs::read(path).unwrap()
+    })
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     manifest: native::Manifest,
@@ -168,12 +186,12 @@ impl Fixture {
             environment_launcher: zdn::lightwallet_image::ENVIRONMENT_LAUNCHER.into(),
         })
         .unwrap();
-        let binary = fs::read(env!("CARGO_BIN_EXE_zdn")).unwrap();
+        let binary = runtime();
         let node_manifest = runtime::Manifest::new(
             host.clone(),
             runtime::Selection {
                 protocol: runtime::PROTOCOL.into(),
-                helper: pin(&base, "native-runtime", &binary),
+                helper: pin(&base, "native-runtime", binary),
             },
         )
         .unwrap();

@@ -82,7 +82,10 @@ jobs:
           python3 - <<'PY'
           import os
           import signal
+          import tempfile
 
+          # Fixtures need physical paths; macOS TMPDIR can have symlinked ancestors.
+          os.environ["TMPDIR"] = os.path.realpath(tempfile.gettempdir())
           signal.signal(signal.SIGINT, signal.SIG_DFL)
           os.execvp("cargo", ["cargo", "test", "--locked"])
           PY

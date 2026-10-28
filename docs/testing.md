@@ -61,6 +61,11 @@ helper or weaken the production ELF check.
 Portable host manifests, input validation and wrong-architecture rejection
 remain covered on the other native platforms.
 
+The lightwallet installation fixture needs GNU `strip` (binutils). It removes
+only debug information from a private controller copy before pinning that copy,
+so fixture startup does not hash the debug build's full symbol data. The real
+supervisor protocol and the startup/cancellation deadlines are unchanged.
+
 On macOS, the generated-build fixture also requires Bash 5 and GNU coreutils
 (`brew install bash coreutils`), with `bash` and `sha256sum` or `gsha256sum` on the
 test launcher's `PATH`. Bash 5 must precede Apple's `/bin/bash` on that `PATH`:
@@ -69,6 +74,11 @@ script's empty arrays under `set -u`. The fixture exposes only the selected shel
 and checksum tool inside its isolated tool directory; it does not inherit the
 launcher's entire `PATH` or alter the Linux build script. Native CI installs
 these prerequisites and puts Homebrew's Bash first on its test `PATH`.
+
+The CI test launcher resolves `TMPDIR` to its physical path before starting
+Cargo. macOS temporary paths can have symlinked ancestors, while wallet fixtures
+require a non-symlinked root. Explicit symlink-rejection controls still create
+their own symlinks beneath that root; production path checks are unchanged.
 
 Logs retain the checked-out commit (the merge commit for pull requests), OS,
 architecture, toolchain versions, input/executable hashes, binary format, public
