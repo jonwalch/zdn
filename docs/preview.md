@@ -1,6 +1,6 @@
 # Public experimental preview
 
-Public source and downloads: [jonwalch/zdn-preview](https://github.com/jonwalch/zdn-preview).
+Public source and downloads: [jonwalch/zdn](https://github.com/jonwalch/zdn).
 Start with the selected release's `START-NETWORK.md` and exact-profile checksums.
 The maintained copy of the instructions is [here](preview-start.md). The public
 repository is a clean source snapshot, not a publication of private product or

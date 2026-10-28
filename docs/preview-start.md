@@ -10,7 +10,7 @@ and cancel other SSM commands in the configured region absent external denies.
 
 ## 1. Select and verify a profile
 
-Obtain assets from <https://github.com/jonwalch/zdn-preview/releases/tag/v0.1.0-preview.2>.
+Obtain assets from <https://github.com/jonwalch/zdn/releases/tag/v0.1.0-preview.2>.
 The release body pins each `SHA256SUMS.PROFILE` list. Compare that list's digest
 through a trusted release channel before using it; co-downloaded checksums alone
 do not authenticate the publisher. Releases are unsigned. Do not bypass OS trust.

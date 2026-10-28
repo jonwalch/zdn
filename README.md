@@ -18,7 +18,7 @@ See [permission limits](docs/aws-state.md#permissions-and-recovery).
 
 ## Start here
 
-1. Select your platform in [public preview releases](https://github.com/jonwalch/zdn-preview/releases).
+1. Select your platform in [public preview releases](https://github.com/jonwalch/zdn/releases).
    Read its status and limits before you download files.
 2. Download ZDN and the files listed for network management. Check their hashes.
 3. Prepare the reviewed node source, chain inputs and Linux host helper. Follow

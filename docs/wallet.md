@@ -88,7 +88,7 @@ archive. The wallet program is not sandboxed; only run bytes you trust.
 ### 1. Obtain the matching wallet program
 
 Network-management downloads do not by themselves include a usable wallet.
-Select the payment profile in the [public preview release](https://github.com/jonwalch/zdn-preview/releases)
+Select the payment profile in the [public preview release](https://github.com/jonwalch/zdn/releases)
 for the separate wallet executable, matching source and required notices, or
 build its exact supplied source. The management-only profile does not require
 these optional files. Do not use an arbitrary executable called `ironwood-wallet`.
