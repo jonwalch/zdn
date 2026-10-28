@@ -22,10 +22,10 @@ See [permission limits](docs/aws-state.md#permissions-and-recovery).
 for the controller and optional separate Ironwood wallet. No Apple signing
 credentials are required. Source builds do not qualify the browser downloads.
 
-**First network:** [choose your node input](#choose-your-node-input), then follow
-the [quick start](#quick-start-start-a-network-try-it-tear-it-down) and
-[setup reference](#setup-and-operating-reference) for AWS access, launch inputs
-and cleanup.
+**First network:** follow the [Preview 3 first-network walkthrough](docs/preview-start.md)
+for verified node inputs, AWS setup, optional payments and cleanup. It continues
+from source installation on Mac or Linux, or verified Linux downloads. Follow
+that walkthrough in order; the quick start below is a summary, not extra steps.
 
 **Using an agent:** start with [agent operating instructions](docs/automation.md#agent-operating-checklist).
 Use the installed CLI's command schema, preserve operation IDs and receipts,
@@ -98,6 +98,11 @@ build. Follow the [existing-image deployment steps](docs/private-devnet.md#deplo
 for the complete command and required chain, helper and AWS inputs.
 
 ## Quick start: start a network, try it, tear it down
+
+For a first run, use the [complete first-network walkthrough](docs/preview-start.md)
+instead. This summary is for users who already have the reviewed inputs and AWS
+setup. Do not repeat `init` or wallet creation after completing the walkthrough.
+For other node inputs, see [choose your node input](#choose-your-node-input).
 
 For your first network, use the default local profile (`devnet`), state directory
 and configuration file (`devnet.yaml`). Complete the release's account and

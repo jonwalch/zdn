@@ -183,10 +183,40 @@ AWS_PROFILE=YOUR_AUTHENTICATED_PROFILE
 ACCOUNT_ID=YOUR_TWELVE_DIGIT_ACCOUNT_ID
 TRUST_PRINCIPAL=YOUR_EXACT_IAM_USER_OR_ROLE_ARN
 REGION=YOUR_AWS_REGION
-ZONE=YOUR_AVAILABLE_ZONE
-AMI_ID=YOUR_AVAILABLE_AMAZON_LINUX_2023_X86_64_AMI
 TEAM=YOUR_NEW_DISPOSABLE_TEAM
 BUCKET=YOUR_NEW_GLOBALLY_UNIQUE_BUCKET
+```
+
+Before bootstrap, select a host image and zone in that same region. These AWS
+commands are **read-only**; they do not create an instance. Resolve AWS's
+[public AL2023 x86-64 parameter](https://docs.aws.amazon.com/linux/al2023/ug/ec2.html#launching-al2023-using-ssm)
+to a concrete AMI ID, then inspect it:
+
+```sh
+AMI_ID=$(aws ssm get-parameter --profile "$AWS_PROFILE" --region "$REGION" \
+  --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+  --query Parameter.Value --output text)
+aws ec2 describe-images --profile "$AWS_PROFILE" --region "$REGION" \
+  --owners amazon --image-ids "$AMI_ID" \
+  --query 'Images[].{Id:ImageId,Name:Name,Architecture:Architecture,State:State}'
+aws ec2 describe-availability-zones --profile "$AWS_PROFILE" --region "$REGION" \
+  --query 'AvailabilityZones[?State==`available`].ZoneName' --output text
+```
+
+Require exactly one Amazon Linux 2023 image with `Architecture: x86_64` and
+`State: available`. Stop if lookup fails or the image does not match. Set `ZONE`
+to one returned zone; availability alone does not guarantee host capacity or
+account quota. Keep this concrete `AMI_ID` for launch and recovery rather than
+resolving the moving parameter again during an interrupted operation.
+
+```sh
+ZONE=YOUR_SELECTED_ZONE_FROM_THE_OUTPUT
+```
+
+After reviewing the values, bootstrap the disposable team. **This command
+creates real IAM/backend resources:**
+
+```sh
 "$ZDN" setup bootstrap --aws-profile "$AWS_PROFILE" \
   --trust-principal "$TRUST_PRINCIPAL" --team-id "$TEAM" \
   --account-id "$ACCOUNT_ID" --region "$REGION" --bucket "$BUCKET" \

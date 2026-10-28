@@ -35,16 +35,16 @@ archive. The wallet program is not sandboxed; only run bytes you trust.
 
 ### 1. Obtain the matching wallet program
 
-**Platform prerequisite — public Mac browser-download onboarding is BLOCKED.**
-Gatekeeper rejected both Chrome-downloaded, quarantined Preview 2 executables
-(controller and wallet) on arm64 macOS 27.0.1. Their published bytes and ad-hoc
-signatures are intact, but they are not Developer ID signed or
-notarized. Unquarantined developer/offline checks pass, but do not qualify the
-browser-download installation path. Do not remove quarantine, re-sign the files,
-disable Gatekeeper or otherwise bypass the installation limitation. Mac users
-cannot complete this public download walkthrough with those artifacts. Instead,
-use the separate [free source installation](install-source.md) (manual or
-source-building Homebrew); this does not qualify the blocked browser binaries.
+**Preview 3 on Mac: install the controller and wallet from source** using the
+[free manual or source-building Homebrew path](install-source.md), then continue
+below with your physical wallet path and its reviewed local-build hash. Preview 3
+does not provide Mac executable downloads.
+
+The withdrawn Preview 2 Mac downloads were rejected by Gatekeeper on arm64
+macOS 27.0.1; they were not Developer ID signed or notarized. Do not remove
+quarantine, re-sign downloaded files, disable Gatekeeper or otherwise bypass OS
+protections. If a locally built program is blocked, stop and investigate.
+Source installation does not qualify those historical browser binaries.
 
 Network-management downloads do not by themselves include a usable wallet.
 Select the payment profile in the [public preview release](https://github.com/jonwalch/zdn/releases)

@@ -102,11 +102,17 @@ each keg's `share/doc`, and lockfiles/toolchain plus required release notices
 under `share/zdn` or `share/ironwood-wallet`. Wallet provenance is retained there
 too. Formulae fetch notices as separately hash-pinned resources.
 
-For wallet registration, choose the physical, versioned executable, **not** the
-Homebrew `bin` or `opt` symlink (ZDN intentionally refuses symlink backends):
+Select the installed controller:
 
 ```sh
 ZDN="$(brew --prefix zdn)/bin/zdn"
+```
+
+**Optional wallet only:** if you installed it, choose the physical, versioned
+executable, **not** the Homebrew `bin` or `opt` symlink (ZDN intentionally refuses
+symlink backends). Management-only users skip this block:
+
+```sh
 IW="$(cd "$(brew --prefix ironwood-wallet)/bin" && pwd -P)/ironwood-wallet"
 test -f "$IW" && test ! -L "$IW" && test -x "$IW"
 ```
@@ -213,13 +219,24 @@ applicability; it does not turn historical binary evidence into new build eviden
 For either path, record the compiler, source/lockfile hashes, executable paths
 and executable SHA-256. Homebrew users can record `brew info --json=v2` for each
 fully qualified formula and `"$(brew --prefix rust)/bin/rustc" --version`.
-Run these no-cloud, no-wallet-key checks:
+All users run these controller checks; they do not contact AWS:
 
 ```sh
 "$ZDN" --version
 "$ZDN" reference > command-reference.txt
 "$ZDN" reference --schema > command-schema.json
-# Optional wallet only (there is no wallet --version):
+```
+
+Require `zdn 0.1.0` and reference `apiVersion` `zdn-command-reference/v1alpha1`.
+
+### Optional wallet: verify and register
+
+**Management-only users skip this section** and continue at
+[first-network setup](#continue-to-first-network-setup). Only run the following
+if you installed the wallet and set its physical `IW` path above. These checks
+do not create wallet keys or contact AWS; there is no wallet `--version`:
+
+```sh
 "$IW" capabilities
 case "$(uname -s)" in
   Darwin) IW_SHA256=$(shasum -a 256 "$IW" | awk '{print $1}') ;;
@@ -227,8 +244,7 @@ case "$(uname -s)" in
 esac
 ```
 
-Require `zdn 0.1.0`, reference `apiVersion` `zdn-command-reference/v1alpha1`,
-wallet `schema_version` 1 and capabilities `ironwood-wallet-state/v2`,
+Require wallet `schema_version` 1 and capabilities `ironwood-wallet-state/v2`,
 `ironwood-wallet-state-observation/v2`, `ironwood-wallet-snapshot-payment/v2`.
 The crate version alone does not identify either build. The locally computed
 hash identifies **your reviewed local build**, not an arbitrary trusted download.
@@ -245,6 +261,8 @@ after `wallet` and before `backend` to isolate a smoke test. Keep the same root
 for later commands. Every backend use checks its bytes again. Homebrew upgrades
 change the versioned path/hash; review and re-register deliberately, never edit
 saved settings to bypass checks. Do not force-link a backend to evade pinning.
+
+### Continue to first-network setup
 
 Next, follow [first-network setup](preview-start.md#source-installed-controller)
 for Git, AWS CLI v2, Session Manager, verified node source, chain inputs, and the
