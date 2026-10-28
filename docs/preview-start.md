@@ -229,6 +229,10 @@ No second miner or maturity override. Poll no faster than once per minute:
 If a bounded scan is incomplete, repeat `wallet sync` until it reaches the
 observed tip before asking for classified rewards/balances. Preserve its store;
 do not mistake a scan refusal for zero funds or start a replacement wallet.
+If a read-only observation refuses with `chain advanced; retry classified
+observation`, sync again and retry that observation. A moving tip can invalidate
+an otherwise complete observation. This is not permission to repeat a payment:
+fund/send recovery must use the original operation UUID as described below.
 
 Only after a sufficient reward reports `mature:true`, `mempool_spent:false` and
 `locally_reserved:false`, make the three payments below in order. After each
