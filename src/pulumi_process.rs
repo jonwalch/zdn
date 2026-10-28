@@ -371,6 +371,10 @@ fn supervise_inner(
         receipt.token == token && receipt.session.is_none() && receipt.completion.is_none(),
         "invalid supervisor receipt"
     );
+    // Reserve cleanup scratch before starting the workload. After a caller
+    // crashes its temporary directory can disappear while shutdown is pending;
+    // the open file remains usable even after that directory is removed.
+    let mut process_list = tempfile::tempfile()?;
     let session = setsid()?;
     receipt.session = Some(session.as_raw());
     write_json(marker, &receipt)?;
@@ -447,7 +451,7 @@ fn supervise_inner(
         }
     })();
     // Always clean up, including failed receipt writes and normal CLI exits.
-    cleanup_session(session, &std::env::current_exe()?)?;
+    cleanup_session(session, &std::env::current_exe()?, &mut process_list)?;
     let status = child.wait()?;
     receipt.completion = Some(Completion {
         success: result
@@ -482,14 +486,14 @@ pub fn kill_session_group(session: i32, group: i32) -> Result<()> {
     feature = "profiling",
     tracing::instrument(skip_all, name = "pulumi_process.cleanup_session")
 )]
-fn cleanup_session(session: Pid, helper: &Path) -> Result<()> {
+fn cleanup_session(session: Pid, helper: &Path, process_list: &mut File) -> Result<()> {
     let deadline = Instant::now() + CLEANUP_TIMEOUT;
     loop {
         ensure!(
             Instant::now() < deadline,
             "Pulumi session cleanup timed out"
         );
-        let groups = session_groups(session, deadline)?;
+        let groups = session_groups(session, deadline, process_list)?;
         if groups.is_empty() {
             return Ok(());
         }
@@ -533,8 +537,9 @@ fn wait_bounded(child: &mut Child, deadline: Instant) -> Result<ExitStatus> {
     }
 }
 
-fn session_groups(session: Pid, deadline: Instant) -> Result<BTreeSet<i32>> {
-    let mut output = tempfile::tempfile()?;
+fn session_groups(session: Pid, deadline: Instant, output: &mut File) -> Result<BTreeSet<i32>> {
+    output.set_len(0)?;
+    output.seek(SeekFrom::Start(0))?;
     let mut ps = Command::new("/bin/ps")
         .args(["-A", "-o", "pid=", "-o", "stat="])
         .env_clear()

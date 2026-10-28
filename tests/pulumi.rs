@@ -1634,11 +1634,13 @@ fn cancellation_kills_descendants_and_heartbeat_failure_stops_execution() {
 #[test]
 fn normal_cli_exit_cleans_up_leftover_provider_processes() {
     let (_root, workspace) = fixture();
+    let scratch = workspace.work_dir.join("temporary");
+    fs::create_dir(&scratch).unwrap();
     executable(
         &workspace.tools.executable,
-        "#!/bin/sh\n(sleep 0.5; touch escaped) &\nexit 0\n",
+        "#!/bin/sh\nrmdir \"$TMPDIR\" || exit 1\n(sleep 0.5; touch escaped) &\nexit 0\n",
     );
-    let command = workspace
+    let mut command = workspace
         .command(
             "leftover",
             &[],
@@ -1648,6 +1650,9 @@ fn normal_cli_exit_cleans_up_leftover_provider_processes() {
             },
         )
         .unwrap();
+    command
+        .env
+        .insert("TMPDIR".into(), scratch.into_os_string());
     assert!(runner().run(&command, &mut keep_going).unwrap().success);
     std::thread::sleep(Duration::from_millis(550));
     assert!(!workspace.work_dir.join("escaped").exists());
