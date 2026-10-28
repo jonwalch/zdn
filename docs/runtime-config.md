@@ -108,9 +108,15 @@ its mempool/metrics/health/tracing/compatibility config types,
 under `node/zakura/crates/`. Startup arguments follow
 `zakurad/src/commands/entry_point.rs`; the executable path follows
 `node/zakura/docker/Dockerfile`.
+These paths and the research commit are historical attribution, not a requirement
+for access to the research repository. Inspect the node source archive and source
+map supplied with the [public release](https://github.com/jonwalch/zdn/releases),
+using the [source setup guide](preview-start.md#1-select-and-verify-a-profile).
+Keep the public source commit, snapshot digest and historical origin identities
+separate; a source map does not make their hashes interchangeable.
 
 Run `cargo test --locked --test runtime_config --test runtime_cli` for the focused
 checks. They use independent TOML structures, synthetic address vectors, and
-temporary local files. [Bootstrap and readiness](bootstrap-readiness.md) now provide
+temporary local files. [Bootstrap and readiness](bootstrap-readiness.md) provide
 saved-history loading and effective-rule checks for an existing node. Rendering
 still does not invoke the node parser or establish launch/client qualification.

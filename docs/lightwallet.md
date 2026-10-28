@@ -141,7 +141,7 @@ zdn devnet up --yes
 `render` saves all nine artifacts. Later `up` calls use those saved copies.
 Metadata checks prove byte identity and declared platform, not source provenance
 or wallet compatibility. The service runs on node 2 when present, otherwise on
-node 1. gRPC and metrics listen only on localhost. `zdn connect` now manages
+node 1. gRPC and metrics listen only on localhost. `zdn connect` manages
 private tunnels for node RPC and light-wallet gRPC.
 
 The initial service budgets are unqualified bounds:

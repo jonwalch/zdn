@@ -1,4 +1,18 @@
-# ZDN Preview 2 — separate downloads
+# Install ZDN and start your first network
+
+This walkthrough installs Preview 2, creates a disposable one-node network,
+optionally sends test coins, and removes the network and team resources.
+Use a new private work directory and keep the same shell and saved receipts
+through cleanup. Commands that create or delete AWS resources are identified
+below; verification commands do not grant permission to run those operations.
+
+**Platform status:** use the checked Linux x86-64 path for a first installation.
+Mac browser-download onboarding is **blocked**: Gatekeeper rejected the published
+quarantined controller and wallet downloaded through Chrome. They are not
+Developer ID signed or notarized. The Mac commands below document native
+developer setup, not a working browser-install path or a current Mac live pass.
+Do not remove quarantine, re-sign files or bypass Gatekeeper to proceed.
+See [preview limits](preview.md#platform-and-trust-limits).
 
 Experimental custom Testnet for trusted developers in a dedicated development
 AWS account. No real funds, Mainnet, production wallet or shared-account tenant
@@ -21,12 +35,11 @@ do not authenticate the publisher. Releases are unsigned. Do not bypass OS trust
 - `pay-linux-x86_64`: the above plus the Linux wallet, wallet source and notices.
 - Mac profiles, when listed in this release's `distribution.json`, additionally
   require the native controller and the separate Linux helper. Do not substitute
-  the Mac executable for the remote Linux helper. Remaining native Mac
-  qualification is agent-owned, not deferred to manual owner testing; no
-  browser-downloaded, live or general-platform pass is claimed without evidence.
+  the Mac executable for the remote Linux helper. Their presence in the release
+  does not mean browser installation works; see the platform warning above.
 
-Download every file named by your profile into a fresh directory; optional
-wallets/private research bundles are not management prerequisites. Verify:
+Download every file named by your profile into a fresh directory. Wallet files
+are required for the payment profile, not the management-only profile. Verify:
 
 ```sh
 # Linux payment profile; use manage-linux-x86_64 if not making payments.
@@ -106,13 +119,11 @@ WORK="$PWD/work"
 "$ZDN" doctor
 ```
 
-Source extraction includes a clean parentless Git root, not the original private
-research history. Its files/identity and exact capture are described in the map.
-Historical wallet results and AWS qualification programs/notes are not part of
-this public build input; source, manifests, locks and legal texts are unchanged.
+Use the extracted node source's own Git identity, as checked above; its source
+map records the included files and hashes. No private repository is required.
 Byte verification and doctor do not validate AWS credentials or prove readiness.
 The product-source archive is the exact binary build revision; the public
-repository has newer distribution-only documentation. Rust code, manifests and
+repository has maintained documentation. Rust code, manifests and
 locks correspond to the build revision recorded in `distribution.json`.
 
 Mac users must never substitute their native executable for the Linux helper.
@@ -258,6 +269,7 @@ incomplete, repeat sync before interpreting a balance, never reset the store.
 "$ZDN" tx demo "$ALICE_TXID"
 "$ZDN" wallet sync demo --wallet bob
 "$ZDN" wallet balance demo --wallet bob
+"$ZDN" wallet sync demo --wallet alice
 "$ZDN" wallet balance demo --wallet alice
 ```
 
@@ -294,8 +306,9 @@ prepared`, save its returned operation UUID, sync the sender, then resume those
 same arguments with that UUID; do not start a new operation.
 Never manually `submit` journaled bytes or
 force-unlock/delete uncertain state. Unknown build dispatch likewise must be
-inspected/reconciled, not blindly repeated. See current public `docs/wallet.md`,
-`docs/private-devnet.md`, `docs/removal.md` and `docs/aws-state.md`.
+inspected/reconciled, not blindly repeated. See [wallet recovery](wallet.md),
+[deployment recovery](private-devnet.md#resume), [removal](removal.md) and
+[AWS state recovery](aws-state.md).
 
 Stop all local controllers, connections and writers before copying the entire
 wallet root (settings, keys, receipts, scan databases/markers, journals, original

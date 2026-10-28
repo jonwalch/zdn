@@ -256,17 +256,6 @@ observations and p50/p95/p99 per phase/configuration; one successful run is not 
 latency distribution. Exercise partial startup/interruption, concurrent bucket
 setting failures and exact-owned cleanup through ZDN. See [operation tracing](profiling.md).
 
-### Wallet journal reader compatibility
-
-A local compatibility check used the journal module from ZDN commit
-`905008ac3e4912fffd919111762c04459cd31a8e`, source SHA256
-`ed4993fca640357eaf04c714a6f797f92bbb30093cffa73f6f214cd763bf0288`.
-The old reader accepted unmigrated 0-, 1- and 1,024-record controls. After migration
-it refused with `invalid payment record` for the first two and `payment operation
-count exceeds limit` for the full store. The ZDN reader current at the time of
-the check reopened all three migrated stores. This was local module integration, not AWS/live-node
-or physical power-loss testing.
-
 ### Packages and releases
 
 Package tests use small synthetic archives, OCI JSON and ELF headers to check

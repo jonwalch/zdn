@@ -1,6 +1,6 @@
 # Scheduled blocks
 
-New private deployments start one Rust block controller on node 1. The default
+Private deployments start one Rust block controller on node 1. The default
 interval is 25 seconds. Set `network.mining.interval` in `devnet.yaml` before
 rendering the deployment. The accepted range is 1 to 86400 whole seconds. The
 saved request pins this value. Existing node-only requests without a saved
@@ -36,10 +36,9 @@ saves a bootstrap-complete marker only after seed loading and readiness succeed.
 Later starts check actual history without submitting the seed blocks again.
 Missing or changed history fails readiness.
 
-The producer has a 128 MiB memory cap and 10% of one CPU, within the existing host
+The producer has a 128 MiB memory cap and 10% of one CPU, within the host
 reserve. It can write only its private state directory. Followers do not start
-this service and reject an observed active controller. No new AWS permissions
-are required.
+this service and reject an observed active controller.
 
 Systemd gives the producer directory its own writable bind mount. The controller
 checks the exact EBS device, target, filesystem root, ext4 type, and safe mount
@@ -66,7 +65,7 @@ authorizes another generation request.
 
 ### Bounded unpaced history
 
-For future wallet qualification runs, add `--unpaced --max-blocks N` to
+For an explicitly approved bounded history run, add `--unpaced --max-blocks N` to
 `chain produce` to build real history without the scheduled wait before the first
 block or between blocks. A positive block-count bound is mandatory. For example,
 with the scheduled service stopped and the same manifest, identity and state:
@@ -75,11 +74,11 @@ with the scheduled service stopped and the same manifest, identity and state:
 zdn chain produce --manifest manifest.json \
   --rpc-endpoint 127.0.0.1:18232 --cookie-file /private/path/.cookie \
   --state-dir /private/path/producer --deployment-id DEPLOYMENT-UUID \
-  --node-id node-1 --interval-secs 1 --unpaced --max-blocks 256
+  --node-id node-1 --interval-secs 25 --unpaced --max-blocks 256
 ```
 
-Keep `--interval-secs` at the existing journal's scheduled cadence if a driver
-checks `intervalSecs`; it remains valid configuration and journal metadata but
+Use the interval pinned by the existing journal (25 seconds in this example).
+It remains valid configuration and journal metadata but
 does not pace an unpaced invocation. The mode is explicit per invocation, not
 persisted: omitting `--unpaced` restores normal scheduling. Host services remain
 scheduled and unchanged.
@@ -93,15 +92,12 @@ interruption inspect status and recompute the remaining target; do not blindly
 repeat the original count or erase the journal. A tip advanced outside the
 producer is never silently adopted.
 
-Future acceptance drivers can add `--unpaced` to their existing bounded mining
-command while retaining the stopped-service, identity, no-pending, exact-height
-and confirmed-count assertions. Keep a small separate scheduled-production
-check, then run the same real wallet 4094/4095/4096/4097 boundary, payment and
-recovery assertions. Do not lower that boundary or synthesize wallet history.
-This mode changes no consensus or timestamp rules and makes no throughput
-guarantee. Real-node history beyond 4096 blocks and wallet acceptance remain
-separate qualification requiring explicit approval; local fixtures do not prove
-them. Do not replace the helper or driver of an active qualification run.
+Unpaced operation changes no consensus or timestamp rules and makes no throughput
+guarantee. It does not qualify scheduled timing or wallet history/payment/recovery
+behavior. Live-node history and wallet acceptance require separate evidence and
+explicit workload approval; local fixtures do not prove them. See
+[testing boundaries](testing.md#external-system-acceptance). Do not replace the
+helper or change saved inputs during an active run.
 
 `chain producer-status` accepts the same `--manifest`, `--state-dir`,
 `--deployment-id`, and `--node-id` arguments and makes no RPC calls. Host status

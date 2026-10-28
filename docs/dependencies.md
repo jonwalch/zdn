@@ -1,7 +1,10 @@
 # Prerequisites and managed tools
 
 `zdn doctor` checks the local versions of Git, AWS CLI v2 >= 2.37.4, and the AWS Session
-Manager plugin. It checks the managed tool receipt when given a managed directory.
+Manager plugin. It always checks the managed tool receipt and installed file
+hashes at the selected tool root: `--managed-dir PATH` when supplied, otherwise
+`$XDG_DATA_HOME/zdn/tools` when `XDG_DATA_HOME` is nonempty, or
+`$HOME/.local/share/zdn/tools`. `XDG_DATA_HOME` must be absolute when set.
 It does not call AWS, check permissions, sign in, download files, or change resources.
 A passing local check does not establish a working AWS identity.
 Version probes bound the direct subprocess. They do not provide process-tree
@@ -12,6 +15,19 @@ Install the three prerequisites with their upstream installers. Then use
 `zdn deps install` to download the pinned Pulumi tools. This command does not need
 AWS credentials, Docker, a local Rust compiler, or a Pulumi Cloud account.
 The [AWS foundation](infrastructure.md) uses these tools for one private test host.
+
+```sh
+zdn deps install
+zdn doctor
+```
+
+Install before running doctor: an absent managed installation is not ready.
+For a custom root, pass the same path to both commands:
+
+```sh
+zdn deps install --managed-dir /absolute/path/to/zdn-tools
+zdn doctor --managed-dir /absolute/path/to/zdn-tools
+```
 
 ## Pinned catalog
 
@@ -57,7 +73,7 @@ receipt are synced before the complete directory is renamed into `versions/`.
 An atomic replacement of `active.json` is the only activation point. A checksum
 failure, failed download, or process interruption preserves the previously active
 installation. A later install removes abandoned staging directories under the
-same lock. Older complete versions remain available; this stage adds no automatic
+same lock. Older complete versions remain available; there is no automatic
 garbage collection.
 
 The receipt names the catalog digest, platform, archive pins, installed file
@@ -102,22 +118,20 @@ and recover without trusting the partial download.
 with local injected results and a blocked lookup. It does not call an OS resolver
 or use the network.
 
-## Local journal catalog dependency
+## Wallet storage dependency
 
-The explicit [wallet journal migration](wallet.md#explicit-indexed-journal-migration-and-local-inventory)
-uses `rusqlite = 0.37.0` (MIT, <https://github.com/rusqlite/rusqlite>) with
+Wallet journal storage uses `rusqlite = 0.37.0`
+(MIT, <https://github.com/rusqlite/rusqlite>) with
 `bundled` SQLite and `limits`, locked through Cargo.lock to `libsqlite3-sys 0.35.0` and SQLite
 3.50.2 (public domain, <https://www.sqlite.org/copyright.html>). Upstream source
 and license attribution remain in the crates; no source is copied into ZDN.
-This adds a native C compilation step, not a system SQLite runtime prerequisite.
-Transitive versions/checksums are recorded in Cargo.lock. No wallet, crypto, node,
-or backend database dependency is introduced.
+Building ZDN from source requires a native C compiler for bundled SQLite;
+using a downloaded ZDN executable does not require system SQLite or that compiler.
+Transitive versions/checksums are recorded in Cargo.lock.
 
-The concrete access requirements are immutable operation-ID uniqueness across
-unbounded retained cancellation tombstones, exact-ID lookup and bounded keyset
-inventory, plus atomic updates of record and active/cancelled classification.
-SQLite's established indexed transactional store avoids inventing a multi-file
-B-tree, deletion log or ever-growing in-memory catalog. DELETE rollback journaling
-with synchronous EXTRA is used; the network-wide file lock remains authoritative
-for coordination. This format still streams lifetime validation and does not enable
-signed-settlement archival or reservation release.
+The journal retains operation-ID uniqueness, exact-ID lookup, bounded inventory,
+and atomic record/classification updates. DELETE rollback journaling with
+synchronous EXTRA and the network-wide file lock protect local coordination.
+For format conversion and recovery, see
+[wallet journal storage](wallet.md#explicit-indexed-journal-migration-and-local-inventory).
+Conversion does not archive signed settlements or release reservations.

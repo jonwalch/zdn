@@ -8,6 +8,43 @@ The output directory must be outside the selected Git checkout. Its parent must
 already exist. Select a new output directory for each snapshot. A completed
 snapshot cannot be replaced by another capture.
 
+## Capture from a configuration
+
+For the preview's reviewed node source, download and verify the public source
+archive and accompanying source map using the
+[release setup guide](preview-start.md#1-select-and-verify-a-profile). A private
+research checkout is not required. Use the revision recorded for that public
+source, not a historical revision mentioned in attribution notes.
+
+Run from a separate working directory. Set `NODE_SOURCE` to the absolute Git
+root and `NODE_REV` to the exact reviewed commit from the release source map:
+
+```sh
+zdn init --config devnet.yaml --source "$NODE_SOURCE" --revision "$NODE_REV" \
+  --nodes 1 --dockerfile node/zakura/docker/Dockerfile --build-context .
+zdn snapshot --config devnet.yaml --output "$PWD/source-snapshot"
+```
+
+`init` writes configuration only. `snapshot` reads `node.source.path` and
+`node.source.revision` from that file; it has no `--revision` flag. The recipe
+above is for the preview archive. Select the appropriate Dockerfile for any
+other reviewed checkout.
+
+For working-file capture instead, create a separate configuration without
+`--revision`. Include an untracked file only when it belongs in the build:
+
+```sh
+zdn init --config working.yaml --source "$NODE_SOURCE" --nodes 1 \
+  --dockerfile node/zakura/docker/Dockerfile --build-context .
+zdn snapshot --config working.yaml --output "$PWD/working-snapshot" \
+  --include path/to/new-file.rs
+```
+
+Replace the include path with an actual source-relative file, or omit
+`--include`. It cannot be combined with revision capture. Both output directories
+must be new and outside `NODE_SOURCE`. Inspect each `receipt.json` before using
+its `source.tar` as a build input.
+
 ## Working files
 
 The default mode selects files from the Git index and copies their current
@@ -76,7 +113,7 @@ Symlinks must be relative, stay inside the checkout, and resolve to captured
 files or directories. Dangling links, cycles, directory symlink substitutions,
 and links to omitted files fail capture. Paths and link targets must use UTF-8.
 
-Git submodules and Git LFS files are rejected in this stage. Hydrated working LFS
+Git submodules and Git LFS files are rejected. Hydrated working LFS
 files and unresolved LFS pointers both produce an explicit error. Capture does
 not run Git LFS or initialize submodules.
 
@@ -123,18 +160,11 @@ and paths produce equal uncompressed archives, independent of file timestamps.
 The receipt includes the archive size and SHA-256 hash.
 Archive creation also checks that each regular file's bytes match its recorded
 size and hash. A mismatch stops capture before the snapshot is published.
-Tar output is buffered in 64 KiB and its bytes are hashed and counted as they
-reach the output file, avoiding a second full archive read. Final tar records and
-buffered output are flushed before the archive fsync and receipt publication.
-Receipt JSON also uses a fixed 64 KiB buffer, flushed before its file fsync;
-pretty-printing does not issue a separate file write for every JSON token.
-Git object requests are buffered but still flushed individually before reading
-each framed response.
+The complete archive and receipt are flushed and synced before publication.
 
 Capture records source metadata before copying. It checks Git state, file
 metadata, and file bytes again before publication. An observed change fails the
-capture. There are deterministic barriers in the library for testing changes
-during selection or copying; tests do not use timing sleeps.
+capture.
 
 Incomplete files stay in a private temporary directory. After validation, capture
 moves the complete snapshot directory into place under a local file lock. A

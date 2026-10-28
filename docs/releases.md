@@ -1,18 +1,38 @@
-# Signed release distribution
+# Optional signed package catalogs
+
+For installing the unsigned public preview, use the
+[release download and setup guide](preview-start.md). Its separate executable,
+node-source/map and chain downloads do not require a signed catalog, a publisher
+key, or any `release sign` command. Checksums detect byte changes; they are not
+publisher signatures.
+
+This page is an advanced reference for consumers of an explicitly trusted signed
+catalog and for publishers creating one. It is not the preview installation
+procedure, and it does not claim that public preview files are signed.
 
 `zdn::releases` authenticates a bounded release catalog and selects an exact,
 SHA-256-pinned deployment package. It does not introduce a new deployment format:
 resolution uses the existing `package::Package` and `artifact_set::ArtifactSet`
 verifiers. No artifact is executed by catalog verification, resolution, or export.
 
-## Local CLI workflow
+## Consumer workflow
+
+Obtain a catalog, its detached signature, and a public key through separately
+trusted channels. Consumers need no private signing key:
+
+```sh
+zdn release verify --catalog catalog.json --signature catalog.sig --trusted-key publisher.pub
+zdn release resolve --catalog catalog.json --signature catalog.sig \
+  --trusted-key publisher.pub --release v0.2.0-rc.1 --output selected
+```
+
+## Publisher workflow
+
+Export an existing verified package, then sign a catalog that pins that export:
 
 ```sh
 zdn package export --manifest package.json --sha256 "$PACKAGE_SHA256" --output exported
 zdn release sign --catalog catalog.json --key publisher.pk8 --output catalog.sig
-zdn release verify --catalog catalog.json --signature catalog.sig --trusted-key publisher.pub
-zdn release resolve --catalog catalog.json --signature catalog.sig \
-  --trusted-key publisher.pub --release v0.2.0-rc.1 --output selected
 ```
 
 Prepare `catalog.json` with the schema below and the exported package's returned
@@ -108,8 +128,11 @@ distribution; `ring` 0.17.14 is reused from the existing lockfile.
 Its `resolve(release: &str, base: &Path, overrides: &BTreeMap<String, PathBuf>)`
 returns `eyre::Result<package::ResolvedPackage>`. The
 `resolve_with_downloader` variant adds `downloader: &impl dependencies::Downloader`
-for offline fixtures. Both require HTTPS catalog URLs, even when transport is
-injected. Production resolution uses the existing bounded `HttpDownloader`.
+for offline fixtures. Both accept relative file package locations. Remote package
+locations must use HTTPS, even when transport is injected; this is not a
+requirement to fetch the catalog itself over HTTPS. The CLI reads the catalog
+from the local `--catalog` file. Production package downloads use the bounded
+`HttpDownloader`.
 
 File package locations are relative to the explicitly supplied catalog directory
 (`base`); artifact file sources remain relative to that package manifest's parent.

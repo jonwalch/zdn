@@ -41,7 +41,7 @@ node parser or validate effective rules, funding periods, or block history.
 It always keeps node validation and launch readiness false.
 `chain render-runtime` adds [candidate runtime settings](runtime-config.md) and
 startup arguments with the same pending flags. [Bootstrap and readiness](bootstrap-readiness.md)
-now use authenticated node diagnostics, verifier-backed loading, and best-chain
+use authenticated node diagnostics, verifier-backed loading, and best-chain
 observations. These commands do not qualify a chain recipe, payment path, or client.
 
 The compatibility record binds component artifact hashes, required capabilities,

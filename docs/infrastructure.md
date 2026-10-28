@@ -1,5 +1,10 @@
 # AWS foundation
 
+The foundation is an **optional, billed infrastructure smoke test**, not a
+prerequisite for a blockchain network. For normal use, follow
+[installation and network launch](preview-start.md) instead.
+Complete [AWS setup](aws-state.md) before using either workflow.
+
 The foundation creates one private EC2 host for a small readiness test. It does
 not start Zakura, mine blocks, build images, or run wallet services. Live
 qualification must cover creation, inspection, updates without replacement,
@@ -35,11 +40,16 @@ flowchart TB
 
 Complete account setup and managed dependency installation first. Select an
 exact AMI ID from the chosen AWS region and an Availability Zone that offers
-the selected instance type.
+the selected instance type. Set `HOST_HELPER` to the verified Linux x86-64
+executable selected by your [public release profile](preview-start.md#1-select-and-verify-a-profile).
+It is required for both render and up, even when the controller runs on a Mac;
+do not substitute a macOS executable.
 
 ```sh
-zdn foundation render --config devnet.yaml --ami-id ami-REPLACE --availability-zone us-east-1a
-zdn foundation up --config devnet.yaml --ami-id ami-REPLACE --availability-zone us-east-1a --yes
+zdn foundation render --config devnet.yaml --ami-id ami-REPLACE \
+  --availability-zone us-east-1a --host-helper "$HOST_HELPER"
+zdn foundation up --config devnet.yaml --ami-id ami-REPLACE \
+  --availability-zone us-east-1a --host-helper "$HOST_HELPER" --yes
 zdn foundation status NETWORK_ID
 zdn foundation destroy NETWORK_ID --yes
 ```

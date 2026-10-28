@@ -18,12 +18,17 @@ See [permission limits](docs/aws-state.md#permissions-and-recovery).
 
 ## Start here
 
-1. Select your platform in [public preview releases](https://github.com/jonwalch/zdn/releases).
-   Read its status and limits before you download files.
-2. Download ZDN and the files listed for network management. Check their hashes.
-3. Prepare the reviewed node source, chain inputs and Linux host helper. Follow
-   the release instructions for account setup and a one-node configuration.
-4. Start, use and remove the network as shown below.
+**First network:** follow the [complete installation and one-node walkthrough](docs/preview-start.md).
+It lists the exact downloads, verification commands, AWS setup, launch inputs
+and cleanup steps. The quick start below is a lifecycle overview, not a
+replacement for that setup.
+
+**Using an agent:** start with [agent operating instructions](docs/automation.md#agent-operating-checklist).
+Use the installed CLI's command schema, preserve operation IDs and receipts,
+and require approval before billed or destructive work.
+
+**Looking for a specific task?** Use the [documentation index](docs/README.md)
+for payments, application connections, recovery, updates and removal.
 
 ZDN CLI payments use a separate Ironwood wallet program; Vizor and Zodl have not
 yet been tested with ZDN. Network
@@ -34,9 +39,12 @@ You need Git, AWS CLI v2 and the AWS Session Manager plugin. ZDN installs its
 pinned Pulumi tools. You do not need local Docker for the remote source-build
 path. See [requirements](#requirements-and-build).
 
-The files are not publisher-signed. The Mac programs are not Developer ID signed
-or notarized. Only you can make the per-file trust decision for a downloaded Mac
-program. Do not remove quarantine or disable Gatekeeper.
+The files are not publisher-signed. **Mac browser-download installation is
+blocked:** the published controller and wallet are not Developer ID signed or
+notarized, and Gatekeeper rejected both quarantined browser-downloaded executables
+in native testing. Successful unquarantined developer checks do not establish
+normal Mac installation support. Use the checked Linux path for now; do not
+remove quarantine, re-sign files or disable Gatekeeper to follow these guides.
 
 ## Quick start: start a network, try it, tear it down
 
@@ -50,11 +58,11 @@ Always select a Linux x86-64 executable for `HOST_HELPER`:
 | Your computer | Controller and helper |
 | --- | --- |
 | Linux x86-64 | Run the Linux controller. Use the release-selected Linux executable as helper. |
-| Apple Silicon Mac | Run the Mac controller. Download its separately pinned Linux helper too. |
+| Apple Silicon Mac | Browser-download installation is blocked. Native developer setup needs the Mac controller and a separately pinned Linux helper. |
 
 ### 1. Start the network
 
-Create the one-node configuration once. The selected research monorepo uses
+Create the one-node configuration once. The distributed node source uses
 `node/zakura/docker/Dockerfile` with the Git root as build context; a standalone
 Zakura checkout may use `docker/Dockerfile` instead. Select the reviewed recipe
 for your exact source, not a guessed file or a different source revision:
@@ -69,7 +77,7 @@ Require `render` to succeed and review its build contract before binding wallets
 or launching. It checks the captured recipe without building or contacting AWS;
 it does not prove the image builds or the network works.
 
-For optional payments, [create the reward wallet now, before launch](docs/wallet.md#create-the-reward-wallet-before-deployment)
+For optional payments, [create the reward wallet before launch](docs/wallet.md#2-create-the-local-reward-wallet-before-launch)
 and use its reward address for `REWARD_ADDRESS`. These coins are test ZEC, not
 real funds. Otherwise use a supported Testnet reward address you control.
 
@@ -149,18 +157,21 @@ after 30 days. That schedule is not physical deletion or proof that billing has 
   Proof of work is disabled. This is not a public-network security test.
 - ZDN uses a trusted node. It is not a consensus light client or a production wallet.
 - Existing Linux executable checks cover x86-64 with GLIBC requirements through 2.34.
-  Native Mac checks cover Apple Silicon on macOS 27.0.1.
+  Native developer/offline checks cover Apple Silicon on macOS 27.0.1, not
+  successful execution of quarantined browser downloads.
 - See the selected release's notes for exact downloaded-file checks and
-  [preview scope](docs/preview.md). Full clean-machine, cross-distribution,
-  browser/Gatekeeper and Mac live qualification are not claimed.
+  [preview scope](docs/preview.md). Mac browser-download onboarding is blocked;
+  full clean-machine, cross-distribution and current Mac live qualification
+  are not claimed.
 - Checksums check bytes. They do not prove publisher identity or legal clearance.
   The release notes retain the license and Apple SDK rights limits.
 
-## Detailed instructions for agents and maintainers
+## Setup and operating reference
 
-Read [AGENTS.md](AGENTS.md) before you change code or run validation.
-The short path above is for a developer. This section defines the operating
-rules and points to the detailed command contracts.
+Use this section when you need the individual setup inputs and recovery rules.
+For an end-to-end first run, use the [installation walkthrough](docs/preview-start.md).
+Agents operating ZDN should read [automation](docs/automation.md); contributors
+changing this repository should also read [AGENTS.md](AGENTS.md).
 
 ZDN builds and starts Zakura nodes. It provides private connections and records
 operations for recovery. Zakura checks the blockchain. A separate wallet program
@@ -359,6 +370,10 @@ Ask for exact scope approval before live AWS validation, node/container builds,
 CodeBuild jobs, proof generation or performance workloads. A request to edit or
 test code is not that approval. Keep unrun tests marked pending. Do not change CI
 triggers to bypass this rule. Read [AGENTS.md](AGENTS.md) and [testing](docs/testing.md).
+
+Maintainers preparing a new Mac release should use the
+[signing and notarization runbook](docs/macos-release.md), which is prepared but
+has not been executed or qualified.
 
 ### Detailed reference
 

@@ -1,79 +1,27 @@
-# Bounded external wallet bridge and durable payments
+# Wallet payments and recovery
 
 **ZDN CLI payments use a separate Ironwood wallet program; Vizor and Zodl
-have not yet been tested with ZDN.** Start with [Alice and Bob](#first-payment-alice-and-bob)
-for a first payment. These are disposable-network test coins, not public Testnet
-or Mainnet funds. A ready RPC service alone does not establish wallet compatibility.
+have not yet been tested with ZDN.** These are disposable-network test coins,
+not public Testnet or Mainnet funds. A ready RPC service alone does not establish
+wallet compatibility.
 
-This is not a generally qualified wallet. No wallet, crypto, node, or
-research dependency is linked into zdn. Supply a separately built, trusted local
-Ironwood backend and its independently verified executable SHA256 once with
-`zdn wallet backend set --backend PATH --backend-sha256 HASH`. Backend-using
-create/import/show/key/scan/sync/balance/rewards/fund/send/archive-payment commands
-use that wallet root's saved pair and verify executable bytes on every use.
-A complete explicit pair overrides it for one command; partial pairs refuse
-rather than mixing explicit and persisted trust. Local `list`,
-`journal`, `journal-migrate`, `journal-enable-settlements`, `cancel-payment`,
-backend-free read-only-network `journal-reconcile`, and transport-only
-`history-export` require neither a key nor a backend and refuse backend-selection
-flags and never read backend settings, even if those settings are damaged.
-There is no PATH lookup, automatic trust-by-hashing, download, release selection,
-or wrapper fallback. Obtain the hash independently; do not compute a hash of an
-untrusted download and treat that as verification.
+## Choose your task
 
-```sh
-umask 077
-mkdir -m 700 ./private-wallet
-IW=/absolute/path/to/ironwood-wallet
-IW_SHA256='REPLACE_WITH_64_HEX_EXECUTABLE_SHA256_FROM_YOUR_VERIFIED_BUILD'
-zdn wallet backend set --backend "$IW" --backend-sha256 "$IW_SHA256"
-zdn wallet key-create ./private-wallet/key.json
-zdn wallet key-public ./private-wallet/key.json
-zdn wallet key-import ./private-wallet/key.json ./private-wallet/copy.json
-zdn wallet scan ./private-wallet/key.json ./trusted-history.json ./private-wallet/scan.json
-```
+- **Make your first payment:** follow [Alice and Bob](#first-payment-alice-and-bob),
+  starting with the platform and wallet-program prerequisites. It covers local
+  wallet creation, reward maturity, payment confirmation and cleanup.
+- **Resume an interrupted payment:** keep the store and original operation ID;
+  follow [interruption recovery](#if-interrupted-when-finished). Do not pay again
+  with a new operation ID.
+- **Use an existing wallet:** see [named wallets](#named-wallets),
+  [sync and checkpoint recovery](#explicit-resumable-sync-and-checkpoint-recovery-statev2),
+  or [payment status and recovery](#durable-funding-payments-and-status).
+- **Inspect interfaces or maintain storage:** use the
+  [advanced reference](#advanced-reference-backend-storage-and-recovery) below
+  the walkthrough. Bare-key imports are scan-only, not a signing-recovery path.
 
-Use normal (default human) mode: key/scan success prints the backend's exact
-public JSON contract; history/balance print zdn's observation JSON described below.
-`--format json/jsonl` remains unsupported and executes nothing.
-The backend must be a regular executable, not a symlink; its bytes are hashed
-before execution. Input keys must be regular private files with no group/other
-permissions. No path may contain symlinks. Output parents must be private
-directories and outputs must not exist. Keep all paths/backend under your control
-throughout execution: preflight checks do not eliminate concurrent path replacement
-or sandbox a malicious backend. A hash identifies bytes, not their trustworthiness.
-
-zdn never loads private key contents. The backend owns key generation, private
-schema/import validation, history parsing and exclusive mode-0600 file and parent
-fsync writes. Keys are plaintext, not mnemonic/HD/encrypted storage. A backend
-failure, crash, process limit, invalid response or post-write permission failure
-may leave a partial or complete new output. zdn does **not** roll it back; inspect
-locally and use a new destination, never assume a failed operation created nothing.
-
-Output stays in memory (1 MiB per stdout/stderr pipe, 60-second deadline, existing
-process-group cleanup). Raw backend stderr and parse diagnostics are never
-forwarded. Exact JSON response shapes reject extra fields, including nested note
-fields, before any stdout is emitted. Key responses require schema 1, `network:
-"test"`, a checksummed Testnet P2PKH reward address, 33-byte compressed SEC public
-key encoding and 43-byte raw Ironwood address encoding. Curve/address cryptographic
-validity belongs to the pinned backend, not zdn's encoding checks.
-
-Scan responses require schema 1, bounded tip/commitment/note indices and counts,
-32-byte tip/digest/anchor hex, and public notes with txid, action_index, unique
-position, positive value_zat and spent. They have exactly the backend's fields, without an
-invented network field. A stderr notice states their scope: **only the supplied
-trusted exported history, never a current network balance**. Large summaries can
-hit zdn's 1 MiB output cap even inside backend history bounds.
-
-The supported backend contract is mapped directly from the research repository's
-`experiments/ironwood-wallet/src/{main,keys,history}.rs` and README, not reimplemented
-crypto. History is an existing full-block JSON export for
-`h0-testnet-nu6.3-at-1`, Testnet genesis
-`05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38`,
-with schema_version, network, genesis_hash, blocks and treestate. Backend limits:
-4096 blocks, 64 MiB raw blocks, 16384 commitments, 129 MiB input JSON. Backend
-validation does not establish consensus, PoW, canonical selection or tip freshness;
-the caller must trust the selected validating node.
+This is an experimental trusted-node wallet, not a generally qualified wallet or
+consensus light client. Keep plaintext keys and complete recovery backups private.
 
 ## First payment: Alice and Bob
 
@@ -87,20 +35,29 @@ archive. The wallet program is not sandboxed; only run bytes you trust.
 
 ### 1. Obtain the matching wallet program
 
+**Platform prerequisite — public Mac browser-download onboarding is BLOCKED.**
+Gatekeeper rejected both Chrome-downloaded, quarantined Preview 2 executables
+(controller and wallet) on arm64 macOS 27.0.1. Their published bytes and ad-hoc
+signatures are intact, but they are not Developer ID signed or
+notarized. Unquarantined developer/offline checks pass, but do not qualify the
+browser-download installation path. Do not remove quarantine, re-sign the files,
+disable Gatekeeper or otherwise bypass the installation limitation. Mac users
+cannot complete this public download walkthrough with those artifacts; wait for
+a release with a verified supported installation path.
+
 Network-management downloads do not by themselves include a usable wallet.
 Select the payment profile in the [public preview release](https://github.com/jonwalch/zdn/releases)
 for the separate wallet executable, matching source and required notices, or
 build its exact supplied source. The management-only profile does not require
 these optional files. Do not use an arbitrary executable called `ironwood-wallet`.
 
-The reference implementation is the separate `experiments/ironwood-wallet`
-workspace originally developed in `jonwalch/zcash-transparent-pq`; the public
-release supplies its standalone corresponding source, without requiring access
-to that private research repository. Its crate version is `0.1.0`, which
+The public release supplies standalone corresponding wallet source, originally
+developed in `jonwalch/zcash-transparent-pq` as `experiments/ironwood-wallet`.
+No access to that repository is required. Its crate version is `0.1.0`, which
 is **not a sufficient version pin**; it has no `--version` interface. Reference
-source revision `70ccc7f45ef9ecdea46151719b82b356b48e2d76` includes the macOS
-SQLite-locking fix. Keep its README, Cargo.lock and upstream MIT/Apache-2.0
-attribution. Its exact `zakura-*` dependencies are Common 3.0.0 (authoritative
+source revision is `70ccc7f45ef9ecdea46151719b82b356b48e2d76`.
+Keep its README, Cargo.lock and upstream MIT/Apache-2.0 attribution.
+Its exact `zakura-*` dependencies are Common 3.0.0 (authoritative
 Common source `0b13ab9e66ea8855a7b4305b17e44fdccbeb3d58`), not arbitrary newer
 wallet libraries. This source reference is not a publisher-signed binary release.
 
@@ -152,8 +109,12 @@ zdn devnet render
 zdn identity bind --manifest "$CHAIN_MANIFEST"
 ```
 
-This recipe is for the selected research monorepo, with its Git root as context.
-For another source layout, select its reviewed Dockerfile/context explicitly.
+Use the distributed public node-source Git root for `NODE_SOURCE` and its exact
+verified revision for `NODE_REV`. That archive preserves the
+`node/zakura/docker/Dockerfile` path and uses its Git root (`.`) as build context;
+it does not require a private research checkout. A separately reviewed standalone
+Zakura source tree may instead use `docker/Dockerfile`; select the recipe for
+the source you actually have, not a guessed path or another revision.
 Require `render` success and review the captured build contract before binding;
 it makes no AWS calls or build and is not live qualification. Do not change the
 recipe after launch has saved immutable inputs to bypass an earlier failure.
@@ -206,8 +167,14 @@ Do not lower maturity or start a second miner to skip the wait. Inspect:
 
 ```sh
 zdn rpc demo getblockcount
+zdn wallet sync demo --wallet funding
 zdn wallet rewards demo --wallet funding
 ```
+
+If sync reports `incomplete`, repeat it before classifying rewards. If a read-only
+observation reports `chain advanced; retry classified observation`, sync that same
+wallet again and retry the observation, not the payment. Another wallet's sync
+does not refresh this wallet's store.
 
 Require an owned reward with `mature: true`, `mempool_spent: false`,
 `locally_reserved: false`, and enough `value_zat` for amount plus fee. Maturity
@@ -253,6 +220,7 @@ Set `ALICE_TXID` to the send result's `txid`, then check both wallets:
 zdn tx demo "$ALICE_TXID"
 zdn wallet sync demo --wallet bob
 zdn wallet balance demo --wallet bob
+zdn wallet sync demo --wallet alice
 zdn wallet balance demo --wallet alice
 ```
 
@@ -273,8 +241,8 @@ Set `BOB_TXID` to Bob's send result's `txid`, then verify:
 ```sh
 zdn tx demo "$BOB_TXID"
 zdn wallet sync demo --wallet alice
-zdn wallet sync demo --wallet bob
 zdn wallet balance demo --wallet alice
+zdn wallet sync demo --wallet bob
 zdn wallet balance demo --wallet bob
 ```
 
@@ -302,7 +270,83 @@ verified executable pin separately. Follow the README's
 once, after stopping connections and writers. Cleanup deletes test-chain data,
 not your local keys or backups; a failed cleanup is not success.
 
-## Named wallets
+## Advanced reference: backend, storage and recovery
+
+The sections below define command interfaces, observation limits and recovery
+barriers. They are reference material, not extra steps before the walkthrough.
+
+### Backend trust and low-level key/scan commands
+
+No wallet, crypto or node dependency is linked into zdn. Supply a separately
+built, trusted local Ironwood backend and its independently verified executable
+SHA256 once with `zdn wallet backend set --backend PATH --backend-sha256 HASH`.
+Backend-using create/import/show/key/scan/sync/balance/rewards/fund/send/archive-payment
+commands use that wallet root's saved pair and verify executable bytes on every
+use. A complete explicit pair overrides it for one command; partial pairs refuse.
+Local `list`, `journal`, `journal-migrate`, `journal-enable-settlements`,
+`cancel-payment`, backend-free read-only-network `journal-reconcile`, and
+transport-only `history-export` need neither a key nor a backend. They refuse
+backend-selection flags and never read backend settings, even if damaged.
+There is no PATH lookup, automatic trust-by-hashing, download, release selection
+or wrapper fallback. A hash identifies bytes, not their trustworthiness; obtain
+it independently, not by hashing an untrusted download and declaring it verified.
+
+These low-level commands are for explicit key/scan tasks, not named-wallet
+creation or payment recovery. A key-only import cannot restore signing authority.
+
+```sh
+umask 077
+mkdir -m 700 ./private-wallet
+IW=/absolute/path/to/ironwood-wallet
+IW_SHA256='REPLACE_WITH_64_HEX_EXECUTABLE_SHA256_FROM_YOUR_VERIFIED_BUILD'
+zdn wallet backend set --backend "$IW" --backend-sha256 "$IW_SHA256"
+zdn wallet key-create ./private-wallet/key.json
+zdn wallet key-public ./private-wallet/key.json
+zdn wallet key-import ./private-wallet/key.json ./private-wallet/copy.json
+zdn wallet scan ./private-wallet/key.json ./trusted-history.json ./private-wallet/scan.json
+```
+
+Use normal (default human) mode: key/scan success prints the backend's exact
+public JSON contract; history/balance print zdn's observation JSON described below.
+`--format json/jsonl` remains unsupported and executes nothing.
+The backend must be a regular executable, not a symlink; its bytes are hashed
+before execution. Input keys must be regular private files with no group/other
+permissions. No path may contain symlinks. Output parents must be private
+directories and outputs must not exist. Keep all paths/backend under your control
+throughout execution: preflight checks do not eliminate concurrent path replacement
+or sandbox a malicious backend.
+
+zdn never loads private key contents. The backend owns key generation, private
+schema/import validation, history parsing and exclusive mode-0600 file and parent
+fsync writes. Keys are plaintext, not mnemonic/HD/encrypted storage. A backend
+failure, crash, process limit, invalid response or post-write permission failure
+may leave a partial or complete new output. zdn does **not** roll it back; inspect
+locally and use a new destination, never assume a failed operation created nothing.
+
+Key/scan output has a 1 MiB limit per stdout/stderr pipe and a 60-second deadline
+with process-group cleanup. Raw backend stderr and parse diagnostics are not
+forwarded. Exact JSON shapes reject extra fields, including nested note fields,
+before any stdout is emitted. Key responses require schema 1, `network: "test"`,
+a checksummed Testnet P2PKH reward address, 33-byte compressed SEC public key and
+43-byte raw Ironwood address. Cryptographic validity belongs to the pinned backend,
+not zdn's encoding checks.
+
+Scan responses require schema 1, bounded tip/commitment/note indices and counts,
+32-byte tip/digest/anchor hex, and public notes with txid, action_index, unique
+position, positive value_zat and spent. They have exactly the backend's fields,
+without an invented network field. Their scope is **only the supplied trusted
+exported history, never a current network balance**. Large summaries can hit
+zdn's 1 MiB output cap even inside backend history bounds.
+
+The contract follows the supplied wallet source's `src/{main,keys,history}.rs`
+and README. History is a full-block JSON export for `h0-testnet-nu6.3-at-1`,
+Testnet genesis `05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38`,
+with schema_version, network, genesis_hash, blocks and treestate. Backend limits:
+4096 blocks, 64 MiB raw blocks, 16384 commitments, 129 MiB input JSON. Backend
+validation does not establish consensus, PoW, canonical selection or tip freshness;
+the caller must trust the selected validating node.
+
+### Named wallets
 
 Create/import/list/show select a saved NETWORK or reviewed imported endpoints.
 Create also accepts an existing local network binding before deployment; the
@@ -361,7 +405,7 @@ old bare-key imports. Do not edit receipts, remove policy fields or downgrade a
 new store to bypass a refusal. Local controller/backup rollback remains outside
 the trusted-storage guarantee.
 
-### Create the reward wallet before deployment
+#### Create the reward wallet before deployment
 
 After normal team setup, bind the intended configuration locally and create its
 fresh signing-enabled funding wallet **before** choosing the deployment reward
@@ -417,7 +461,7 @@ Its `key_verified:false` is deliberate: list never runs the backend or proves a
 receipt still matches its key. Show verifies that identity; it does not check funds.
 Receipts are local bindings, not signed attestations against a hostile local user.
 
-## Explicit resumable sync and checkpoint recovery (state/v2)
+### Explicit resumable sync and checkpoint recovery (state/v2)
 
 For an existing named wallet, explicitly run:
 
@@ -508,7 +552,7 @@ untouched. Nodes are not garbage-collected; the backend's 2 GiB store and bounde
 owned-state limits still apply. These local fixture-qualified mechanics are not
 live AWS/node, genuine-proof, physical power-loss, performance or beta qualification.
 
-### Incremental named balances and rewards
+#### Incremental named balances and rewards
 
 With `ironwood-wallet-state-observation/v2`, named `balance` and `rewards` resume
 up to four batches in one locked, authenticated session. Incomplete sync refuses
@@ -526,7 +570,7 @@ bounded legacy path. After explicitly enabling settlement storage, classified
 named balances/rewards require the v2 observation capability rather than using
 legacy classification without archive reconciliation.
 
-## Trusted-node history and balances
+### Trusted-node history and balances
 
 These commands manage one verified private connection themselves. No separately
 running `connect` or `exec` is needed. Select saved NETWORK/`--profile`/`--state-dir`
@@ -616,17 +660,16 @@ Use `balance ... --confirmed-only` with an older scan-only backend or when an
 as-of chain scan is intended. It permits a positive observed scan lag and returns
 `unspent_note_count` with `spendable_zat`, `pending_zat`, `immature_zat` explicitly
 **null (unknown), not zero**. It does not read the mempool or silently fall back
-from failed classification. Normal balance now needs a backend with the new
-balance command; key/scan/construct backend interfaces remain unchanged.
+from failed classification. Normal balance requires a backend implementing the
+balance command; a key/scan-only backend is insufficient.
 
-## Durable funding, payments and status
+### Durable funding, payments and status
 
 These commands use the same reviewed manifest, saved network or imported endpoints,
 AWS profile, fixed SSM documents and private service identity checks as balance.
 They acquire their own scoped connection. `fund` defaults to the local named
 `funding` wallet, which must already belong to a complete signing-enabled store.
-Importing a deployment reward key now permits observation only, not funding;
-the former key-only reward-import funding workflow is no longer supported.
+Importing a deployment reward key permits observation only, not funding.
 Preserve the complete original funding store for recovery. Newly created wallets
 can spend funds received at their own addresses; creating one does not transfer
 authority over an external reward key.
@@ -665,7 +708,7 @@ It retains an immutable request, original preparation evidence, a
 backend-authenticated plan, exact signed bytes and txid. The backend's opaque
 `plan_authorization_hex` binds every typed plan field to the sender key.
 
-### Snapshot-bound v2 payments
+#### Snapshot-bound v2 payments
 
 New fund/send operations with capability `ironwood-wallet-snapshot-payment/v2`
 also require state/v2 and the reviewed scoped identity. Under the network lock,
@@ -741,7 +784,7 @@ remain readable; older strict readers reject the new `reserved` and `signing`
 outcomes and refuse the whole scope while either is present. Do not downgrade or
 edit the journal to bypass this barrier.
 
-### Local unsigned cancellation
+#### Local unsigned cancellation
 
 ```sh
 zdn wallet --wallet-dir ./wallets cancel-payment --endpoints ./endpoints.json --aws-profile participant \
@@ -781,7 +824,7 @@ cancellation retention, **not signed-settlement archival**: without the separate
 explicit settlement upgrade below, every noncancelled record still consumes the
 active budget and retains all reservations.
 
-### Explicit indexed journal migration and local inventory
+#### Explicit indexed journal migration and local inventory
 
 ```sh
 zdn wallet --wallet-dir ./wallets journal-migrate --endpoints ./endpoints.json \
@@ -796,40 +839,28 @@ zdn wallet --wallet-dir ./wallets journal --endpoints ./endpoints.json \
 
 These commands use cancellation's local scope selection and network-wide lock;
 omit backend flags. No key, backend, AWS or RPC access occurs. Ordinary payment
-commands **never migrate** a legacy scope. Preview hashes the domain
-`zdn.wallet.journal-migrate.v1\0`, canonical scope binding, then the sorted,
-length-delimited canonical typed records. Wrong/stale tokens refuse before staging.
-Whitespace is not identity; no request/plan/envelope/attempt/outcome is upgraded.
-In particular, legacy planned signing uncertainty is retained. Once indexed,
-reapplying any migration proposal refuses; preview reports already indexed.
+commands **never migrate** a legacy scope. Preview binds the complete scope and
+records; wrong or stale tokens refuse before staging. Migration preserves every
+request, plan, envelope, attempt and outcome, including legacy signing uncertainty.
+Once indexed, reapplying a proposal refuses; preview reports already indexed.
 
-SQLite supplies an operation-ID primary key, transactional tombstone updates and
-keyset pagination. It is independent of backend wallet storage and links no wallet,
-crypto or node implementation. The catalog stores complete typed records, not an
-unbounded JSON array. Original catalog/v1 reads stream complete-scope validation;
-explicit settlement catalog/v2 reads indexed bounded live work instead. Inventory
-emits at most 100 small summaries
-(default 20). Exact-ID lookup emits one record, at most 4 MiB. SQLite also enforces
-a row-length bound before Rust materializes a corrupt oversized blob. Counts, canonical
-active record bytes, retained legacy file bytes, catalog file bytes, and unresolved
-counts are local inventory, not spendability or disk-space guarantees. Snapshots
-under `payment-data` are not measured or garbage-collected here. `next_after` is
-the last returned ID; an empty next page terminates traversal. Pagination is a
-fresh locked view per invocation, not a frozen multi-command snapshot.
+The SQLite catalog is separate from the backend's wallet database. Inventory
+returns at most 100 summaries (default 20); exact-ID lookup returns one record,
+at most 4 MiB. Counts and byte totals are local inventory, not spendability,
+disk-space or full-integrity guarantees. `payment-data` snapshots are neither
+measured nor garbage-collected here. `next_after` is the last returned ID; an
+empty next page ends traversal. Each page is a fresh locked view, not a frozen
+multi-command snapshot. Catalog/v1 validates the complete scope on reads;
+explicit settlement catalog/v2 uses bounded indexed live work instead.
 
-**Authority/crash boundaries:** under the existing network lock, apply first creates
-private `ROOT/NETWORK_UUID/payments.catalog.sqlite`, commits the entire imported
-representation with SQLite DELETE rollback journaling and synchronous EXTRA, verifies
-every imported identity/record against the originals, and fsyncs the database and
-scope directory. Only then does it atomically publish/fsync `payments/.catalog-v1`.
-That incompatible object is a scope-wide compatibility barrier inside the actual
-old reader's scanned directory, not an ignored sidecar or 1,025th payment operation.
-Exactly 1,024 legacy records can migrate without cancelling/deleting any record.
-The barrier makes the catalog authoritative; original UUID JSON files remain
-byte-for-byte intact and never become fallback authority. All subsequent record
-and cancellation changes commit atomically in SQLite under the same network lock.
-EXTRA includes directory synchronization after rollback-journal deletion; the scope
-directory is also explicitly fsynced before a transition returns to its caller.
+**Authority/crash boundaries:** under the network lock, apply commits and verifies
+the complete import in private `ROOT/NETWORK_UUID/payments.catalog.sqlite` and
+fsyncs the database and scope directory before publishing/fsyncing
+`payments/.catalog-v1`. This compatibility barrier makes the catalog authoritative
+and causes old readers to refuse the scope. All 1,024 allowed legacy records can
+migrate without deletion or cancellation. Original UUID JSON files stay
+byte-for-byte intact, but are **never fallback authority**. Subsequent record and
+cancellation changes are transactional and synchronized before returning.
 
 After interruption before the barrier, normal commands refuse while a staged
 catalog exists. Run migration preview/apply again: a complete matching staged
@@ -856,7 +887,7 @@ explicit settlement/v2 below selects the indexed trusted-local-storage boundary.
 Contributor coverage and the older-reader compatibility check are described in
 the [test coverage notes](testing.md#subsystem-coverage-notes).
 
-### Explicit settled archival and reorg quarantine
+#### Explicit settled archival and reorg quarantine
 
 ```sh
 # After journal-migrate, preview the separate local format upgrade:
@@ -912,7 +943,7 @@ Reorg quarantine cannot silently disappear to satisfy active quotas. Classificat
 materializes at most 1,024 ordinary records/64 MiB plus a separate 1,024-record/
 64 MiB quarantine read budget; a larger quarantine refuses classification while
 all SQL guards and paginated inspection remain intact. Archived/quarantined IDs
-refuse ordinary fund/send resume. This increment deliberately offers no archived
+refuse ordinary fund/send resume. There is no archived
 redispatch, quarantine force release or signed-expiry cancellation. Preserve and
 inspect the exact original evidence; those transitions need a separate explicit
 policy, not hand editing. Active signing/broadcast-uncertainty recovery retains
@@ -965,6 +996,8 @@ resumable state/v2 with explicitly enabled checkpoint recovery. There is no
 independent consensus verification or automatic deep reset. These are deliberate bounded prototype limits,
 not a production wallet or atomic/current availability guarantee.
 
-Fresh integrated AWS/live qualification remains pending.
+The selected release's [bounded Linux payment results](preview-start.md#4-launch-wait-fund-and-send)
+do not qualify other component bytes, Mac live use or general recovery behavior.
+Those cases still require separate integrated AWS/live qualification.
 Offline CLI tests use local fake AWS/RPC/backend processes and
 require neither credentials nor proofs; genuine-proof backend controls are separate.

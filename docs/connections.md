@@ -8,9 +8,9 @@ devnet binding.
 
 ## Connect
 
-Install AWS CLI v2 and an AWS Session Manager plugin newer than 1.2.497.0 for
-your operating system and CPU architecture. `connect` checks that the plugin
-runs before it contacts AWS. This version requirement keeps session tokens out
+Install AWS CLI v2 **2.37.4 or later** and an AWS Session Manager plugin newer
+than 1.2.497.0 for your operating system and CPU architecture. `connect` checks
+that the plugin runs before it contacts AWS. This version requirement keeps session tokens out
 of process arguments, using the [AWS CLI's token environment-variable support](https://github.com/aws/aws-cli/blob/v2/awscli/customizations/sessionmanager.py).
 Sign in with your AWS profile. A participant does not need Pulumi, Docker, Rust,
 or deployment-state access.
@@ -375,15 +375,14 @@ not be attached to this role; repeat setup verifies its exact trust and policy.
 Repeat setup with the same inputs to verify or finish the grant. After an
 uncertain apply, inspect the saved receipt and use `--reconcile`. A different
 network, target, or trusted-principal set cannot be substituted during recovery.
-For a grant created before enforced session names, repeat the original setup
-command with `--yes`, then update each participant profile from `roleSessionNames`.
-Setup preserves the original project and receipt, validates the owned checkpoint,
-and applies the stricter trust policy using `project-v2`. Only the exact old
-policy for the same principals is accepted as an upgrade input. Final verification
-requires the new conditions. A trust update does not revoke existing STS credentials
-or close old tunnels: terminate old sessions and revoke or let old credentials
-expire before relying on the new isolation boundary.
-[Participant removal](removal.md#remove-a-separate-participant-grant) now removes
+If an existing grant lacks enforced session names, repeat its original setup
+command with `--yes`, then configure each participant from `roleSessionNames`.
+Keep the original project and receipt unchanged. Setup validates the owned
+checkpoint and accepts only the exact prior policy for the same principals;
+final verification requires the enforced names. A trust update does not revoke
+existing STS credentials or close old tunnels: terminate old sessions and revoke
+or let old credentials expire before relying on the new isolation boundary.
+[Participant removal](removal.md#remove-a-separate-participant-grant) removes
 the separately owned grant using its original receipt. It refuses active sessions
 instead of terminating them, and reports a narrowly scoped live denial check
 separately from IAM absence. Network teardown deletes its session documents and

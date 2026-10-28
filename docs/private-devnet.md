@@ -6,10 +6,14 @@ retained chain disk, and starts a pinned Zakura container. It loads saved histor
 and checks actual node rules, history, and producer templates through
 authenticated loopback RPC.
 
-Fresh CLI requests always select native Rust node/gateway/lightwallet execution;
-`--native-runtime` is now an optional compatibility flag. Old Python requests
-remain inspectable and removable but cannot execute health/up/update or be
-converted. Recreate test deployments with new bindings.
+For your first network, follow the [installation walkthrough](preview-start.md).
+For an existing network, use [fresh health checks](#fresh-health-checks) or
+[resume the original operation](#resume); preserve its inputs and receipts.
+
+Node, gateway, and lightwallet services use the native Rust runtime.
+Legacy Python-runtime receipts support inspection and cleanup only, not
+health/up/update or in-place conversion. Preserve those receipts unchanged and
+use a new binding for a replacement deployment.
 
 New requests start the [block controller](block-producer.md) after every node
 passes fresh readiness. The default interval is 25 seconds.
@@ -28,12 +32,11 @@ lightwalletd and supply its three pinned image inputs on first render. Existing
 configs are unchanged: supported deployments require `services.wallet: false`
 and `services.faucet: false`; also set `services.lightwallet: false` for nodes only.
 Missing or partial service inputs are rejected before staging.
-An older request may have saved enabled flags while deploying nodes only.
-Its immutable configuration is not migrated: `render/up`, including `--reconcile`,
-now reject that request. Preserve its receipts and use `status` or
-`destroy --reconcile` by deployment selector; those commands use saved state and
-do not require the current config. Editing the service flags is not an in-place
-migration. Use a new binding for a new explicit node-only launch.
+Requests whose saved enabled-service settings lack the required service inputs
+cannot run `render/up`, even with `--reconcile`. Preserve their receipts unchanged
+and use `status` or, after inspecting uncertainty, `destroy --reconcile` by
+deployment selector; these commands use saved state without the current config.
+Do not edit saved service flags to bypass validation. Use a new binding instead.
 Every result keeps
 `launchReady: false` and payment qualification
 pending. `devnet status` reports AWS inventory and saved outputs; it does not
@@ -95,13 +98,15 @@ Supply these immutable inputs:
 - A [consensus manifest](chain-manifest.md) and verified saved-block bundle. The
   supported loader requires a checkpoint at every saved height and no later
   checkpoint. The configured upgrades and proof-of-work mode must match it.
-- A Linux x86-64 `zdn` executable built from this implementation and runnable on
-  Amazon Linux 2023. The local macOS executable cannot serve as the host helper.
+- The release-selected, verified Linux x86-64 `zdn` helper, runnable on Amazon
+  Linux 2023. Follow the [public release download and verification guide](preview-start.md#1-select-and-verify-a-profile).
+  The local macOS executable cannot serve as the host helper.
 - A supported transparent Testnet producer reward address. This sets the
   producer's template address; it does not fund an Ironwood wallet.
 
-No release image or host-helper download is shipped yet. A new deployment
-needs its own pinned inputs. This command accepts existing images;
+The public release supplies the Linux helper, node source and chain inputs,
+but no prebuilt qualified node image. Keep all selected release pins and notices.
+A new deployment needs a verified pinned image. This command accepts existing images;
 for `node.source.path`, [source delivery](builds.md) captures source,
 reuses an exact verified image or runs/resumes a native CodeBuild job with persistent
 intermediate layer caches, and verifies the image
@@ -345,7 +350,7 @@ uncertain command. The current update operation must be Running or Unknown with
 a saved reference identifying this update UUID. Its outcome is preserved, not
 relabelled success. The pending intent stays in the manifest; export does not
 manufacture `completed.json` or confirm nodes. Untouched targets without saved
-scripts/journals and unfinished update builds remain blocked. Update staging now
+scripts/journals and unfinished update builds remain blocked. Update staging
 saves exact scripts and genuine Prepared journals for every selected target before
 dispatching any host mutation. A crash after staging can therefore carry untouched
 targets too; their original attempt IDs survive export/import and explicit resume.

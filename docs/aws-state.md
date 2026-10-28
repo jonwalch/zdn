@@ -1,5 +1,10 @@
 # AWS identity and team state
 
+Use this page to set up account access, share a team export or recover an
+interrupted setup. Start with [one-time account access](#one-time-account-access);
+for a complete first network, follow the [installation walkthrough](preview-start.md).
+Setup changes IAM and storage in the selected AWS account and can incur charges.
+
 The cloud foundation uses AWS CLI v2 **2.37.4 or later**, a named AWS profile, an
 expected account ID, and one deployment region. The live adapter checks the CLI
 version before it makes an AWS API request. A local fixture executable can test
@@ -81,7 +86,9 @@ S3 backend retain their SDK or selected-profile retry settings. Conditional
 metadata conflicts have bounded retries. A mutation with an uncertain result is not blindly
 repeated. In particular, KMS key creation has no idempotency token. If its
 response is lost, preserve the receipt, inspect keys with its bootstrap ID, and
-supply the matching key ARN through the explicit setup recovery option. Recovery
+supply the matching key ARN by repeating the original `zdn setup bootstrap`
+command with `--recovered-key ARN`, keeping its original profile, state directory
+and setup inputs. Do not edit the receipt to insert the key. Recovery
 checks the key's account, region, type, state, and ownership tags. It does not
 create a second key to conceal the interrupted request. If a bucket creation
 attempt has no observable bucket, preserve the receipt and inspect the AWS
@@ -394,15 +401,14 @@ Pulumi state can require administrator recovery; do not delete receipts to retry
 Changed trust or policy requests are refused by the recovery path; administrator
 update/membership tooling remains separate work.
 
-Early versions gave `runtimeBoundary` and `runtimePolicy` the same physical IAM
-name. Recovery now preserves whichever policy was created first. Normal setup
-uses the suffixes `-runtime-boundary` for the boundary and `-runtime` for the
-management policy. If the old boundary was created first, setup keeps its
-`-runtime` name and ARN and creates the management policy with
-`-runtime-management`. Recovery preserves the boundary identity and Pulumi
-protection; it does not rename, delete, or repurpose it. The node extension adds explicit team
-artifact/ECR permissions when an administrator repeats setup. Detection accepts
-the exact legacy or current boundary document, never a management policy.
+IAM recovery preserves the boundary identity and Pulumi protection recorded in
+the owned checkpoint; it never renames, deletes, or repurposes that policy.
+New setup uses `-runtime-boundary` for the boundary and `-runtime` for the
+management policy. A supported legacy checkpoint may instead identify the
+boundary as `-runtime`; recovery retains that ARN and uses
+`-runtime-management` for the management policy. Detection accepts only the
+exact supported legacy or current boundary document, never a management policy.
+Repeating administrator setup adds the scoped team artifact/ECR permissions.
 
 Setup chooses these names from the validated, owned Pulumi checkpoint after
 refresh. It checks policy identity, path, ownership tags, protection, and the
@@ -438,8 +444,8 @@ For an existing backend export, `zdn setup role-plan --from team.yaml
 program, administrator backend, and caller grant without AWS calls or file writes.
 Its output is marked `proposalOnly`, with `checkpointChecked: false` and a
 `namingSource` of `defaults` or `teamDefinition`. Without a completed team export,
-the first legacy recovery can choose different names after reading its
-checkpoint. The generated local project is also provisional until that check.
+recovery may resolve different names from the owned checkpoint. The generated
+local project is also provisional until that check.
 The actual saved Pulumi preview uses the resolved names before apply and keeps
 the prepared provider unchanged.
 

@@ -1,5 +1,10 @@
 # Pulumi process adapter
 
+Advanced reference for contributors and operators diagnosing state or interrupted
+operations, not an installation procedure. Use the [preview setup guide](preview-start.md)
+to install and launch through ZDN. Do not run the adapter's Pulumi commands
+manually to bypass ZDN's ownership, lease or recovery checks.
+
 `zdn` renders a Pulumi YAML project and runs the verified managed Pulumi CLI.
 The adapter does not download tools, sign in to AWS, choose an account, or break
 a remote lock. The operation layer must verify the AWS identity, reserve the

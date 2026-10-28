@@ -1,5 +1,10 @@
 # Private Zakura topology
 
+**Advanced reference:** AWS resource layout, access boundaries and update limits.
+For a first deployment, use the [public release guide](preview-start.md) and
+[private deployment workflow](private-devnet.md). You do not need to render or
+modify this topology separately to launch a network.
+
 The private topology supports one to three Zakura nodes. Each node has its own
 EC2 instance and encrypted EBS data disk. All nodes share one VPC, one private
 subnet, and one NAT gateway in the selected availability zone.

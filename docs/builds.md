@@ -5,11 +5,10 @@ job and then the private-node deployment, with exact-image reuse,
 persistent intermediate layer caches and recovery of the same saved build.
 A successful image build does not prove that a node starts or that wallet payments work.
 
-Build execution now requires a pinned native exporter. Old receipts without that
-selection remain readable for inspection and cleanup, but cannot poll, resume,
-cancel, reuse or submit through the build executor. Do not delete or rewrite a
-legacy receipt to grant new authority; inspect its actual job and settle/remove
-the disposable test resources separately.
+For first-time installation, follow the [public preview setup guide](preview-start.md).
+This page explains build inputs, billed work, reuse and recovery. The release
+provides the reviewed node source/map, chain inputs and Linux helper; a private
+research checkout is not required.
 
 ## 1. Build contract
 
@@ -30,8 +29,9 @@ The existing host inspection/bootstrap/readiness checks still apply.
 
 ## 2. Administrator resources
 
-Repeat administrator `setup bootstrap` with the team's original role settings
-to apply the updated protected Pulumi access stack. This adds:
+Administrator `setup bootstrap` creates the protected team access stack and
+build resources. For an existing team, use its original role settings when
+repeating setup. The build resources include:
 
 - A dedicated private, ownership-enforced S3 bucket with public-access blocking,
   versioning, bucket-default AES256 encryption and a TLS-only policy. It is separate from the
@@ -73,7 +73,7 @@ The adapter privately copies and verifies the tar, uploads it with a server-chec
 SHA-256, and requires an S3 version ID. Its inline buildspec retrieves that exact
 version, verifies the hash again, extracts it, builds the runtime target natively,
 and pushes a unique attempt tag. Buildx disables provenance/SBOM indexes so the
-result can meet the single-platform image contract. New attempts use exporter
+result can meet the single-platform image contract. Attempts use exporter
 protocol `zdn-build-export/v1alpha2`: Buildx pushes directly to ECR without loading
 the image into Docker, a separate push, or a whole-image `docker save`. The recipe
 uses `jq` (included in CodeBuild Standard 7.0) to select the config digest from
@@ -81,23 +81,16 @@ the registry manifest, then requests its download URL using the existing
 repository-scoped `ecr:GetDownloadUrlForLayer` permission. The native exporter
 checks the manifest and returned digest before downloading the exact raw config
 with the existing bounded HTTPS downloader. Manifest/config digest, size,
-platform, provenance, capability and runtime-default checks remain unchanged;
+platform, provenance, capability and runtime-default checks are required;
 the exporter does not validate layer contents. Presigned URLs stay in private files
 and are excluded from exporter transport errors.
 
-Only the current exporter protocol is supported; old build attempts cannot be
-migrated or executed.
-
-The exporter and source uploads share the bounded AWS batch helper. Both private
-copies and requests are validated before either upload starts. Each confirmed
-checksum, encryption mode and version ID is saved on the controller thread even
-if its peer fails; resume uploads only the missing peer. Upload or receipt/progress
-errors prevent `StartBuild`. No new executor or retry authority is introduced.
-After the result establishes the exact image identity, manifest and config reads
-share a batch with separate private output files and bounded streaming reads.
-Manifest/config verification and independent ECR comparison still precede local
-publication. The result read and ECR verification retain their identity/content
-dependencies; exact-contract reuse and changed-source layer caching are unchanged.
+Build execution requires a pinned native exporter using the supported protocol.
+Both private source/exporter copies validate before upload. Each confirmed
+checksum, encryption mode and version ID is saved even if its peer fails;
+resume uploads only the missing peer. Upload or receipt/progress errors prevent
+`StartBuild`. Manifest/config verification and independent ECR comparison precede
+local publication.
 
 The versioned, private `build/attempt.json` binds the team, project, repository,
 contract, attempt UUID, uploaded S3 version, submission state and build ID.
@@ -113,22 +106,14 @@ has completed. Unknown AWS outcomes, terminal build errors,
 unknown status, missing outputs and invalid images stop before node allocation.
 Verified files are published locally only after validation and the ECR check.
 
-The adapter's `run_with_progress` API reports sanitized observations after durable
-attempt writes. It exposes the attempt UUID and contract fingerprint, whether
-source upload/submission/build identity is recorded, a reuse candidate UUID, and
-the fixed job outcome. It excludes source versions, raw provider IDs, buildspecs
-and diagnostics. `imageVerified` becomes true only after the result files and
-independent ECR check pass, not when a job says `SUCCEEDED` or an index selects a
-candidate. Resuming rechecks verification rather than trusting a previous event.
-Observer failure stops later effects without erasing intent or automatically
-stopping/resubmitting an existing job. A failure after saved submission intent can
-therefore require reconciliation even when no request was sent. The original
-`run` API retains no-op reporting. Source `up` now uses these observations for
-the [machine contract](automation.md#implemented-lifecycle-execution-events):
-JSONL/progress files receive `build-observed` records, and terminal JSON/JSONL
-retains the latest sanitized attempt under `data.build`. Build attempts do not
-invent lifecycle operation IDs; node provisioning still starts only after the
-image is verified and staged. Machine formats grant no build authorization.
+Source `up` reports sanitized build observations through the
+[machine contract](automation.md#implemented-lifecycle-execution-events).
+JSONL/progress files receive `build-observed` records; terminal JSON/JSONL retains
+the latest attempt under `data.build`. `imageVerified` becomes true only after
+result validation and the independent ECR check, not a job's `SUCCEEDED` status.
+Resume rechecks verification. Reporting failures stop later effects without
+erasing intent or automatically resubmitting a job; reconciliation may be needed
+even when submission was not sent. Machine formats grant no build authorization.
 
 Before a new upload or job, a bounded `images/CONTRACT_SHA256.json` index can select
 a prior result attempt. Only typed S3 `NoSuchKey` is a cache miss. The index is
@@ -145,7 +130,7 @@ team infrastructure, native platform, executor/cache format and recipe; source
 changes can reuse compatible dependency/compiler layers. BuildKit content keys
 invalidate changed Dockerfile/toolchain steps. Each attempt has an immutable cache
 key and a compatible fallback prefix.
-Missing caches build cold. New attempts set cache export `ignore-error=true`, so
+Missing caches build cold. Cache export uses `ignore-error=true`, so
 an optional cache-export failure does not fail an otherwise successful build.
 Compilation, registry push and other build failures do not trigger a second
 blanket `--no-cache` build. Missing cache imports can be ignored by BuildKit, but
@@ -167,31 +152,45 @@ This adds no KMS or IAM grants and leaves the state/backend KMS boundary unchang
 
 There is no automatic resubmission of terminal or unresolved attempts. Preserve
 `source-snapshot/`, `source-build-inputs.json` and `build/`; do not delete receipts
-to retry paid work. Missing, malformed and legacy receipts fail closed and require
-manual job inspection, not automatic migration. [Selected-node updates](updates.md)
+to retry paid work. Missing, malformed or unsupported receipts fail closed and
+require manual job inspection. A receipt without the pinned exporter selection
+can be inspected for cleanup but cannot authorize execution, polling,
+cancellation or reuse. [Selected-node updates](updates.md)
 reuse this build path without replacing hosts or disks. Changed source must use
 the explicit update command, not recovery through `up`.
 
 ## 4. CLI integration
 
-Prepare a node-only local-source config with
-`zdn init --source /path/to/zakura` (the default `--service-preset node-only`).
-Select the repository recipe at init with `--dockerfile PATH --build-context PATH`,
-both relative to the captured Git root and requiring `--source`. Defaults remain
-`docker/Dockerfile` and `.`; the selected research monorepo instead requires
-`--dockerfile node/zakura/docker/Dockerfile --build-context .`.
-`zdn devnet render` captures
-a temporary local snapshot and reports the contract and costs without contacting
-AWS. This is a build preview, **not** a saved node infrastructure plan; `up`
-captures source again. A native Linux helper and saved chain inputs are still
-required; this deliverable does not distribute either artifact.
+Download and verify the release's node source archive and accompanying source
+map, chain manifest/bundle and Linux x86-64 helper using the
+[release setup guide](preview-start.md#1-select-and-verify-a-profile). Set
+`NODE_SOURCE` to the extracted Git root and `NODE_REV` to its reviewed public
+commit. Historical research attribution does not replace that source identity.
+Set `HOST_HELPER`, `CHAIN_MANIFEST` and `CHAIN_BUNDLE` to the verified release files.
+On a Mac, the helper is the separately downloaded Linux executable, not the Mac
+controller.
+
+Prepare a node-only config (the default `--service-preset node-only`):
+
+```sh
+zdn init --source "$NODE_SOURCE" --revision "$NODE_REV" --nodes 1 \
+  --dockerfile node/zakura/docker/Dockerfile --build-context .
+```
+
+Recipe paths are relative to the captured Git root and require `--source`.
+The example selects the public preview archive's recipe. Other reviewed source
+trees may use the defaults `docker/Dockerfile` and `.` instead.
+`zdn devnet render` captures a temporary local snapshot and reports the contract
+and costs without contacting AWS. This is a build preview, **not** a saved node
+infrastructure plan; `up` captures source again. See [source capture](source-capture.md)
+for separate snapshot commands and working-file capture.
 
 After reviewing the contract and administrator setup:
 
 ```sh
 zdn devnet render
 zdn up --yes --ami-id ami-REPLACE --availability-zone us-east-1a \
-  --manifest manifest.json --bundle chain.tar --host-helper ./zdn-linux-x86_64 \
+  --manifest "$CHAIN_MANIFEST" --bundle "$CHAIN_BUNDLE" --host-helper "$HOST_HELPER" \
   --reward-address YOUR-TESTNET-REWARD-ADDRESS
 ```
 
@@ -210,7 +209,7 @@ build/reuse and image/ECR verification does `up` freeze the node request and ent
 the leased Pulumi/SSM provisioning path.
 
 After interruption, the same `up --yes` command with unchanged caller inputs
-reuses the saved archive and attempt. Alternatively, a complete preparation now
+reuses the saved archive and attempt. Alternatively, a complete preparation
 supports `devnet up --saved NETWORK --profile PROFILE --yes`, without the
 original checkout, configuration or caller artifact files. Any dispatched attempt
 requires `--reconcile` in saved mode. Source controllers must be quiescent before

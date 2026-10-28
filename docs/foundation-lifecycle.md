@@ -1,7 +1,11 @@
 # Foundation operations and recovery
 
-The foundation runs one harmless test service. It does not consume the selected
-Zakura source, build an image, or launch the configured three-node chain.
+The `zdn foundation` commands provide an **optional, billed infrastructure smoke
+test**, not a prerequisite for launching a chain. For a node network, use the
+[private deployment flow](private-devnet.md) directly after team setup.
+The smoke test runs one test service. It does not consume the selected Zakura
+source, build an image, or launch a chain. Its hosts, NAT gateway, disks and
+shared storage incur AWS charges; retained resources remain billed after teardown.
 The config supplies the local team profile, network label and host size. The
 first render also needs an exact AMI and Availability Zone. The saved request
 keeps those host settings fixed. Labels can change without replacing resources.

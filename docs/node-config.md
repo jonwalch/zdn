@@ -73,10 +73,16 @@ The JSON input is limited to 2 MiB. The renderer also bounds the serialized inpu
 and normalized manifest to 2 MiB, and the output TOML to 8 MiB. These are CLI
 resource limits. They do not establish node capacity.
 
-## Source mapping and checks
+## Historical attribution and checks
 
 The adapter follows research commit
 `860203d4d39a480c145f9c04bdf0d1dd08ab0625`; it imports no node code or dependencies.
+The paths below are historical attribution under that research tree, which may
+not be publicly accessible. For inspectable node source, use the source archive
+and source map from the [public release](https://github.com/jonwalch/zdn/releases)
+and [source setup guide](preview-start.md#1-select-and-verify-a-profile).
+Use the map to relate paths and origins without treating the public source's
+commit or snapshot digest as the historical research commit.
 
 | Source under `node/zakura/crates/` | Adapter use |
 | --- | --- |

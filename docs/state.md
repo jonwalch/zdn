@@ -1,5 +1,11 @@
 # Local identities and receipts
 
+**Advanced reference:** local state format, identity rules and recovery internals
+for operators and contributors. For a first deployment, start with the
+[public release guide](preview-start.md); for ordinary resume and transfer, use
+the [saved deployment workflow](private-devnet.md#resume). Never edit receipts
+to change identities or bypass recovery checks.
+
 The local state store creates no AWS resources,
 reserves no cloud ID, and does not claim that a network is running. Every binding
 has `reservation: unreserved`.
@@ -65,8 +71,8 @@ the receipt before retrying.
 
 Malformed state, unknown fields, unsupported versions, and invalid fingerprints
 fail with an error. The store does not silently reset them. Preserve damaged
-state before recovery. The format is currently version 1; no migration from a
-previous released format is needed. The current file limit is 16 MiB.
+state before recovery. The supported format is version 1. The current file limit
+is 16 MiB.
 
 ## Operation decisions
 

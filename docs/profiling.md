@@ -1,5 +1,11 @@
 # Operation tracing
 
+Contributor reference for collecting and interpreting private timing records,
+not an installation step. For normal use, start with the
+[network walkthrough](preview-start.md). Performance workloads require
+[explicit scope approval](testing.md#external-system-acceptance); tracing does
+not grant permission to run them.
+
 Build with the optional `profiling` feature to record lifecycle timing:
 
 ```sh

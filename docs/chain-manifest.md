@@ -6,7 +6,7 @@ and [saved-byte import and verification](chain-artifacts.md). A
 candidate Zakura TOML. These are offline contracts; they do not establish node
 acceptance or consensus validity. The [host lifecycle](host-lifecycle.md) executes
 the runtime, but chain-recipe and client qualification remain pending. The
-[runtime renderer](runtime-config.md) now adds per-node settings and startup arguments.
+[runtime renderer](runtime-config.md) adds per-node settings and startup arguments.
 
 Inspect a candidate JSON file:
 
@@ -89,11 +89,18 @@ Database and backup reuse must check the approved fingerprint and storage-format
 compatibility. Complete chain and payment acceptance still requires the
 [qualification procedure](compatibility.md).
 
-## Source mapping and fast checks
+## Historical attribution and fast checks
 
 The schema follows the pinned research implementation at
 `jonwalch/zcash-transparent-pq` commit `860203d4d39a480c145f9c04bdf0d1dd08ab0625`.
 No node or cryptographic implementation is imported into the CLI.
+The links below are historical attribution and may require access to that
+repository; they are not public download prerequisites. Obtain inspectable node
+source and its source map from the [public release](https://github.com/jonwalch/zdn/releases),
+following the [source setup guide](preview-start.md#1-select-and-verify-a-profile).
+The map relates the public source to its origin; the historical commit, public
+source commit and snapshot digest remain distinct identities. Do not substitute
+one for another in manifests or build records.
 
 | Reference | Use in this contract |
 | --- | --- |

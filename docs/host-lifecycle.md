@@ -1,4 +1,9 @@
-# Run a private Zakura host
+# Native host lifecycle reference
+
+Advanced reference for operators investigating installation or recovery and for
+contributors maintaining the host contract. For first-time installation, follow
+the [preview setup guide](preview-start.md). Normal `zdn up` operations deliver
+and invoke this installer; do not reproduce these steps manually on a host.
 
 The host installer supports a first install and an exact retry on Amazon Linux
 2023 x86-64. It runs after Pulumi attaches the selected EBS volume and SSM is

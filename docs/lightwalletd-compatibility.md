@@ -5,7 +5,9 @@ and parser needed for Ironwood. Use it as the compatibility candidate. This sour
 and its fixture tests do not qualify the custom Testnet, a wallet, or payments.
 The [chain and payment procedure](compatibility.md) remains open.
 
-Automatic deployment now integrates the [cookie supervisor](lightwallet.md).
+Automatic private installation is implemented and integrates the
+[cookie supervisor](lightwallet.md). Live node/wallet compatibility remains
+pending; an implemented installer is not a compatibility or payment pass.
 lightwalletd reads static credentials at startup. Mounting the cookie file alone
 does not make authentication work after a node restart.
 
@@ -16,6 +18,16 @@ does not make authentication work after a node restart.
 | lightwalletd | [`v0.5.5`, `d16d48124e9ad4157ebc2324b5090c6ba201470c`](https://github.com/zcash/lightwalletd/tree/d16d48124e9ad4157ebc2324b5090c6ba201470c) |
 | Canonical light-wallet protocol | [`v0.5.0`, `ac7cee052a1bf5d430985a478d39e8b513fc4bd4`](https://github.com/zcash/lightwallet-protocol/tree/ac7cee052a1bf5d430985a478d39e8b513fc4bd4) |
 | Candidate Zakura source | Research repository revision [`91381abfa57563653427d4a7341f2fce14d82b90`](https://github.com/jonwalch/zcash-transparent-pq/tree/91381abfa57563653427d4a7341f2fce14d82b90/node/zakura) |
+
+The research links identify the historical source reviewed here; access to that
+history is not an installation prerequisite. Obtain corresponding public node
+source and its per-file source map from the
+[selected public release](https://github.com/jonwalch/zdn/releases/tag/v0.1.0-preview.2),
+following the [download and verification guide](preview-start.md#1-select-and-verify-a-profile).
+The [public source description](preview.md) explains the separately identified
+projection. Its source identity is not the historical research revision above:
+do not remap provenance identities or treat this review as live qualification of
+different release bytes.
 
 The two protocol
 files bundled by lightwalletd are byte-identical to the canonical v0.5.0 files:
@@ -92,12 +104,12 @@ zdn's existing authenticated node service. See the
 [configuration reader](https://github.com/zcash/lightwalletd/blob/d16d48124e9ad4157ebc2324b5090c6ba201470c/frontend/rpc_client.go)
 and [HTTP client](https://github.com/zcash/lightwalletd/blob/d16d48124e9ad4157ebc2324b5090c6ba201470c/frontend/rawrequest.go).
 
-The service adapter must keep node authentication enabled. It must provide a
-private generated configuration from the current cookie and restart lightwalletd
-when that cookie changes, or provide an authenticated local bridge. Keep secrets
-out of arguments, receipts, logs, and image layers. Test missing cookies, atomic
-replacement, stale credentials, node restart, and host reboot before enabling
-automatic installation.
+The implemented service adapter keeps node authentication enabled, generates a
+private configuration from the current cookie, and restarts lightwalletd when
+the cookie changes. Secrets must stay out of arguments, receipts, logs, and image
+layers. Live qualification must still test missing cookies, atomic replacement,
+stale credentials, node restart, and host reboot; automatic installation alone
+does not prove those recovery paths.
 
 The supported process flags include `--grpc-bind-addr`, `--http-bind-addr`,
 `--zcash-conf-path`, `--data-dir`, and `--log-file`. The private host design uses

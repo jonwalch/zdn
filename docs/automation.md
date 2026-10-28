@@ -5,6 +5,46 @@ does not grant mutation consent, bypass identity checks, or authorize retries.
 Keep configuration validity, checked prerequisites, fresh service health, and
 wallet/payment qualification separate.
 
+## Agent operating checklist
+
+Use this page to operate the installed product. [AGENTS.md](../AGENTS.md) is
+additional guidance for contributors changing the repository, not a prerequisite
+for a person connecting to an existing network.
+
+1. **Discover the installed contract.** Read `zdn reference --schema` and the
+   relevant long help. Do not invent flags, assume every command supports machine
+   output, or treat `--help` as a dry run.
+2. **Choose the task.** For a first network, follow [installation](preview-start.md).
+   For an existing network, use its original profile, state directory, network
+   UUID and receipts. For participant-only access, follow [connections](connections.md)
+   rather than creating a second team.
+3. **Verify inputs before execution.** Check the selected release's full profile,
+   hashes, platform limitations and matching source/notices. Run the applicable
+   local checks and offline render. They do not establish AWS authorization,
+   network readiness or payment success. Mac browser-download installation is
+   [currently blocked](preview.md#platform-and-trust-limits); do not bypass OS trust.
+4. **Get consent for effects.** Present the account, region, network, billed
+   resources and deletion scope before running cloud or destructive commands.
+   `--noninteractive` selects interaction behavior; it is not consent. Do not
+   add `--yes` or `--delete-data` unless that exact action is authorized.
+5. **Observe and preserve.** Save the terminal result, retry classification,
+   operation IDs and receipts in private storage outside captured source. Never
+   print credentials, private keys or full wallet backups into logs or chat.
+   Use fresh `devnet health` for service readiness, not local `devnet list`.
+6. **Recover the same operation.** After a timeout or lost reply, inspect the
+   original receipt/journal before another dispatch. Use the documented
+   reconciliation path. Resume payments with their original operation UUID and
+   identical intent; never create a new payment as a retry.
+7. **Close out honestly.** Use [native removal](removal.md), not wildcard AWS
+   deletion. Report retained resources, uncertain outcomes and pending checks.
+   KMS PendingDeletion is not physical deletion or billing closure. Do not
+   promote fixture, offline or health results into live payment qualification.
+
+Live validation, node/container builds, proof generation and performance
+workloads need separate scope approval under [contributor test rules](testing.md).
+An instruction to review documentation or run ordinary tests is not approval
+for those workloads.
+
 ## Offline command reference
 
 ```sh

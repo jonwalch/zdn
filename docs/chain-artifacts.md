@@ -73,13 +73,13 @@ or report can authorize launch or substitute for qualification evidence.
 
 ## Node loading and remaining work
 
-[Bootstrap and readiness](bootstrap-readiness.md) now compare node-decoded
+[Bootstrap and readiness](bootstrap-readiness.md) compare node-decoded
 identities and effective rules and load a supported history through the verifier.
 The first recipe requires a checkpoint at every saved height. Checkpoint acceptance
 is distinct from full semantic validation. Run loading on each node before block
 production; custom Testnet does not self-seed genesis.
 
-A [network configuration renderer](node-config.md) now maps supported manifest
+A [network configuration renderer](node-config.md) maps supported manifest
 choices to candidate Zakura TOML and rejects settings the inspected interface
 cannot express. A [runtime renderer](runtime-config.md) adds per-node settings
 and startup arguments. The [private deployment lifecycle](private-devnet.md)

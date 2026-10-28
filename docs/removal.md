@@ -3,13 +3,38 @@
 These administrator commands use the original
 product receipts and existing Pulumi stacks, not an AWS resource-name cleanup
 script. Keep the original private state directory and all audit receipts.
+Never edit receipts or delete journals to bypass a refusal.
+
+Before using the examples, replace these values with the inputs from the
+original creation workflow, not a newly imported profile or a new state directory:
+
+```sh
+STATE=/absolute/path/to/original/private-state
+CREATOR=original-zdn-profile-name
+ADMIN=original-administrator-aws-profile-name
+```
+
+`CREATOR` is the local zdn profile that created the team; `ADMIN` is its
+administrator AWS credential profile, not the deployment role. Keep that login
+available through cleanup. The two profile names need not match.
 
 ## Remove a separate participant grant
+
+Locate the original grant's `participant.json` under
+`$STATE/participants/BOOTSTRAP_UUID/FULL_NETWORK_UUID/` and set its directory:
+
+```sh
+PARTICIPANT_RECEIPT_DIR="$STATE/participants/ORIGINAL_BOOTSTRAP_UUID/FULL_NETWORK_UUID"
+```
+
+Replace both UUID placeholders with the exact original IDs from the creation
+receipt. A network label or short UUID prefix is not a receipt-directory name.
+Use this same directory for every proposal, removal and reconciliation attempt.
 
 Review the offline proposal first (no AWS calls or managed tools):
 
 ```sh
-zdn setup remove-participant --receipt-dir "$STATE/participants/$BOOTSTRAP/$NETWORK"
+zdn setup remove-participant --receipt-dir "$PARTICIPANT_RECEIPT_DIR"
 ```
 
 Stop participant connections and other writers. Removal refuses **any active SSM
@@ -21,7 +46,7 @@ AWS profile for the later read-only denial check. Do not put credentials in CLI
 arguments, logs, or receipts.
 
 ```sh
-zdn setup remove-participant --receipt-dir "$STATE/participants/$BOOTSTRAP/$NETWORK" \
+zdn setup remove-participant --receipt-dir "$PARTICIPANT_RECEIPT_DIR" \
   --yes --revocation-profile OLD_PARTICIPANT_SESSION
 ```
 
@@ -62,7 +87,7 @@ If the optional old-session probe fails **after role/stack deletion**, inspect t
 receipt and reconcile bookkeeping **without `--revocation-profile`**:
 
 ```sh
-zdn setup remove-participant --receipt-dir "$STATE/participants/$BOOTSTRAP/$NETWORK" \
+zdn setup remove-participant --receipt-dir "$PARTICIPANT_RECEIPT_DIR" \
   --yes --reconcile
 ```
 
@@ -102,10 +127,10 @@ An actual health-test foundation continues to use `zdn foundation destroy`.
 
 ```sh
 # Offline, read-only proposal. --plan is an explicit alias for this default.
-zdn setup remove-team --state-dir "$STATE" --profile CREATOR --aws-profile ADMIN
+zdn setup remove-team --state-dir "$STATE" --profile "$CREATOR" --aws-profile "$ADMIN"
 
 # Complete teardown after the network/data and participant steps above.
-zdn setup remove-team --state-dir "$STATE" --profile CREATOR --aws-profile ADMIN \
+zdn setup remove-team --state-dir "$STATE" --profile "$CREATOR" --aws-profile "$ADMIN" \
   --yes --delete-data --writers-stopped
 ```
 

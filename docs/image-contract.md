@@ -1,5 +1,9 @@
 # Zakura image inputs
 
+Advanced reference for image publishers and contributors, not an installation
+procedure. First-time operators should follow the [preview setup guide](preview-start.md);
+the source-build workflow produces and verifies these image records for them.
+
 The node image is a Linux x86-64 image pinned by its **single-platform child
 manifest digest**. A tag, a release name, and a multi-platform index digest do
 not satisfy this contract. Keep three files with the image: its record, the

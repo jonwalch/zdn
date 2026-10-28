@@ -4,6 +4,10 @@
 verifier. `chain readiness` checks its parsed rules and actual best-chain history.
 Neither command starts a node, creates AWS resources, or starts block production.
 
+These are advanced commands for an existing node. Normal [network launch](preview-start.md)
+loads and checks history automatically; do not repeat bootstrap manually on a
+running deployment to bypass lifecycle recovery.
+
 These commands require a Zakura build with the authenticated `getchainrules` and
 `inspectchainblock` diagnostics. An older node fails before block submission.
 Use the running node's cookie file and a numeric loopback RPC endpoint, directly

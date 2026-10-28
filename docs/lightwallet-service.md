@@ -3,7 +3,7 @@
 `zdn lightwallet render-service` prepares an offline service recipe. It does not
 create resources, install files, enable a service, or qualify Ironwood support.
 Both `deploymentReady` and `launchReady` remain false for this standalone recipe.
-The separate [devnet lifecycle](lightwallet.md#deploy-with-nodes) now installs the
+The separate [devnet lifecycle](lightwallet.md#deploy-with-nodes) installs the
 same service with saved image inputs, cache authority, and SSM journals.
 
 The recipe selects the lightwalletd v0.5.5 command contract at commit

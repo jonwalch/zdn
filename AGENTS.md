@@ -1,8 +1,13 @@
 # zdn
 
+For agents operating an installed ZDN, start with
+[the operating checklist](docs/automation.md#agent-operating-checklist) and
+[first-network guide](docs/preview-start.md). The rules below apply to agents
+changing this repository or running validation.
+
 This is an independent Rust workspace and local Git repository. Do not add node,
 wallet-proof, or research-workspace dependencies. Do not publish this repository
-without an explicit user request. Keep code and tests focused on the delivery plan.
+without an explicit user request. Keep code and tests focused on the requested task.
 
 Normal checks are `cargo fmt --all -- --check`, `cargo test --locked`, and
 `cargo clippy --all-targets --locked -- -D warnings`. The test suite must use only
@@ -27,5 +32,6 @@ Unimplemented cloud commands must fail before making changes; never report
 simulated cloud or payment success.
 
 Defaults: Zakura only, isolated custom Testnet, Ironwood payment pool,
-lightwalletd planned with compatibility unqualified, 25-second block target,
+node-only services (optional lightwalletd installation is implemented, with
+client/payment compatibility unqualified), 25-second block target,
 private access, three medium nodes, AWS/EC2/Docker, Pulumi with team-owned S3 state.

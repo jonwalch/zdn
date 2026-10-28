@@ -6,10 +6,10 @@ format disks, change consensus/configuration, replay bootstrap, or update the
 installed Rust helper. The original cluster request and installation identity
 remain immutable; confirmed image revisions are recorded separately per node.
 
-Only native-runtime deployments and native update intents can execute. Historical
-Python deployments/updates are inspection and cleanup data, not resumable work.
-Recreate disposable test networks with fresh bindings; no in-place conversion or
-legacy dispatcher repair is supported.
+Only native-runtime deployments and native update intents can execute. Legacy
+Python deployment/update receipts support inspection and cleanup only, not
+resume or in-place conversion. Preserve those receipts unchanged and create a
+new binding for a replacement test network.
 
 Before updating, check storage-format and peer compatibility for the exact old
 and new images. A successful build alone does not establish either.
@@ -41,9 +41,9 @@ New source updates require a Linux helper implementing
 replacement for the installed host helper. Its exact bytes are saved with the
 original build attempt before publishing the update intent. CodeBuild checks
 the pinned object's owner, version, size, digest and protocol before source
-extraction or Docker. There is no Python fallback. Resume takes no new helper
-input. Only the current exporter protocol is supported; old build attempts are
-not migrated or kept executable in this unreleased beta.
+extraction or Docker. Resume takes no new helper input. Build attempts using
+unsupported exporter protocols cannot execute; preserve their receipts for
+inspection and cleanup rather than editing them to claim the current protocol.
 
 Use the deployment's saved `--profile` and `--state-dir` when not using defaults.
 The current CLI uses the same verified managed-tool installation as `up`, but
@@ -134,10 +134,8 @@ Previously authorized production may resume after local readiness;
 the controller requires fresh cluster and enabled-service observations before
 marking the update finished.
 
-Native execution never replaces or repairs a Python dispatcher. The old
-`--migrate-update-dispatcher` compatibility flag and historical Python renderers
-are removed. Data-only recovery receipts remain available for inspection/cleanup;
-they cannot authorize native work. Original native scripts,
+Data-only legacy recovery receipts cannot authorize native execution. Do not
+edit them to change runtime identities. Original native scripts,
 exact command journals and completed revision history remain required for
 recovery, handoff and fresh health checks. Missing, changed or unfinished evidence
 fails closed.
