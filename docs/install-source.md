@@ -268,6 +268,13 @@ file and executable mode matched the pinned public Git tree. The Linux locked
 release build, executable schema/capabilities, source capture and chain-byte
 checks also passed.
 
+The subsequent [bounded native journey](preview.md#verified-native-journey-2026-10-28)
+used that same source-installed controller and the existing pinned source-built
+wallet. One source build/node, normal reward maturity, three confirmed payments,
+original-UUID reopen, coherent backup and independently audited cleanup passed.
+This execution evidence is separate from installation checks and does not imply
+full beta, general Mac support or browser-download qualification.
+
 The earlier checks below cover Preview 2 installation inputs, not the updated
 controller/formula versions. Wallet source, lockfile and notice bytes are unchanged:
 

@@ -48,6 +48,23 @@ Keys and complete wallet stores remain local and contain plaintext secrets.
 Normal scheduled mining and reward maturity are required for payments; an open
 RPC port or capability response is not a payment test.
 
+## Verified native journey (2026-10-28)
+
+The exact Preview 3 source-installed Apple Silicon controller, separately pinned
+Linux helper and existing source-built Ironwood wallet completed one source build,
+one healthy private node, normal 25-second/100-block maturity and three confirmed
+payments. Amounts, fees, canonical inclusion and final balances passed; the original
+payment UUID reopened unchanged, a coherent 38-file backup passed, and retained
+disk deletion and independent 200/199-observation cleanup audits passed with the
+complete protected account baseline unchanged. The owned KMS key is scheduled
+for deletion, not physically deleted.
+
+See the [pinned evidence report](https://github.com/jonwalch/zcash-transparent-pq/blob/2d00031cbd1961179834b61620eb987a91d86146/docs/archive/validation/ZDN_PREVIEW3_NATIVE_JOURNEY_2026_10_28.md)
+for exact component identities, selected subcases, earlier failures and limits.
+This is not full beta, general Mac support, signing/notarization, browser-download,
+lost-dispatch, hostile rollback or reorg qualification. Published assets are
+unchanged; no private operational evidence or wallet data is distributed.
+
 ## Source identities and notices
 
 Preview 3 controller/helper and source installation use product revision
