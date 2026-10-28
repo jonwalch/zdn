@@ -1,5 +1,3 @@
-#[cfg(target_os = "linux")]
-use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{fs, process::Command};
@@ -2928,9 +2926,13 @@ fn native_runtime_selection_preserves_original_identity_and_rejects_ambiguous_da
     assert!(changed.validate().is_err());
 }
 
-#[cfg(target_os = "linux")]
+// These fixtures execute the deployed Linux x86-64 helper, whose real ELF
+// header is checked before invocation. ARM controllers must reject their own
+// native binary here; portable input/manifest tests above still run on ARM.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod native_runtime {
     use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
     use std::{
         io::Write,
         os::unix::fs::{symlink, MetadataExt, PermissionsExt},
@@ -3716,7 +3718,17 @@ fn main() {
         fixture.manifest.spec.config_sha256 =
             hex::encode(Sha256::digest(fixture.manifest.spec.config_toml.as_bytes()));
         fixture.manifest.install_sha256 = fixture.manifest.spec.install_sha256().unwrap();
+        // Serve authenticates but does not execute the selected helper. Pin the
+        // small real ELF fixture so hashing a full debug controller cannot use
+        // up the loopback health deadline before the daemon starts accepting.
+        fixture.manifest.runtime.helper = fixture.manifest.spec.helper.clone();
         let root = fixture.root.path();
+        let runtime = root.join(format!(
+            "etc/zdn/runtime/{}",
+            fixture.manifest.runtime.helper.sha256
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        fs::copy(root.join("etc/zdn/artifacts/zdn"), runtime.join("zdn")).unwrap();
         for name in [
             "etc/zdn/identity.json",
             "etc/zdn/volume-claimed.json",

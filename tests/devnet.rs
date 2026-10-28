@@ -812,6 +812,11 @@ fn helper_header_and_file_size_checks_reject_wrong_machine_and_nonregular_inputs
         changed[index] = 0;
         assert!(devnet::validate_helper(&changed).is_err(), "byte{index}");
     }
+    // An ARM controller must not pass its own native executable as the
+    // deployed x86-64 helper. Keep this boundary covered on every platform.
+    let mut arm64 = valid.clone();
+    arm64[18..20].copy_from_slice(&183u16.to_le_bytes());
+    assert!(devnet::validate_helper(&arm64).is_err());
     assert!(devnet::validate_helper(&valid[..63]).is_err());
     let fixture = Fixture::new();
     assert!(devnet::read_bounded(&fixture.helper, 63).is_err());

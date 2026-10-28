@@ -54,13 +54,20 @@ suite, strict all-target Clippy, and a locked release build. Jobs have a
 the other platforms. Host/compiler architecture checks reject accidental
 cross-compilation; only actual successful runner executions establish evidence.
 
+The host-runtime execution fixtures in `tests/host.rs::native_runtime` run only
+on Linux x86-64, matching the deployed host/helper platform. They must not run
+an ARM controller as an x86-64 helper or weaken the production ELF check.
+Portable host manifests, input validation and wrong-architecture rejection
+remain covered on the other native platforms.
+
 On macOS, the generated-build fixture also requires Bash 5 and GNU coreutils
 (`brew install bash coreutils`), with `bash` and `sha256sum` or `gsha256sum` on the
 test launcher's `PATH`. Bash 5 must precede Apple's `/bin/bash` on that `PATH`:
 the fixture selects the first `bash` file. Apple Bash 3.2 rejects the Linux
 script's empty arrays under `set -u`. The fixture exposes only the selected shell
 and checksum tool inside its isolated tool directory; it does not inherit the
-launcher's entire `PATH` or alter the Linux build script.
+launcher's entire `PATH` or alter the Linux build script. Native CI installs
+these prerequisites and puts Homebrew's Bash first on its test `PATH`.
 
 Logs retain the checked-out commit (the merge commit for pull requests), OS,
 architecture, toolchain versions, input/executable hashes, binary format, public

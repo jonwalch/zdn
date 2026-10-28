@@ -66,6 +66,14 @@ jobs:
             *) echo 'Native runner architecture mismatch' >&2; exit 1 ;;
           esac
 
+      - name: Install macOS fixture shell prerequisites
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash coreutils
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix bash)/bin/bash" --version
+          "$(brew --prefix coreutils)/bin/gsha256sum" --version
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

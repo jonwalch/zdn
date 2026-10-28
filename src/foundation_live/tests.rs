@@ -533,7 +533,10 @@ fn readiness_wait_uses_fake_time_and_renews_the_lease() {
         let commands = f.backend.aws.health_commands.borrow();
         let command = commands[0]["Parameters"]["commands"][0].as_str().unwrap();
         // SSM can be Online before cloud-init has installed the helper. Run
-        // the actual dispatched shell with only host effect paths relocated.
+        // the dispatched shell with host effect paths relocated and a local
+        // stand-in for Linux's timeout (not installed by default on macOS).
+        // These immediate fixtures test initialization ordering, not deadlines;
+        // still check the remote timeout arguments before running its command.
         // Even an existing helper must not hide failed cloud initialization.
         for init_exit in [0, 1] {
             let root = tempfile::tempdir().unwrap();
@@ -553,6 +556,13 @@ fn readiness_wait_uses_fake_time_and_renews_the_lease() {
                     "/opt/zdn/foundation-zdn",
                     &format!("/bin/sh '{}'", helper.display()),
                 );
+            let mapped = format!(
+                "timeout() {{\n\
+                 test \"$1 $2 $3\" = '--signal=TERM --kill-after=5s 600s' || return 3\n\
+                 shift 3\n\
+                 \"$@\"\n\
+                 }}\n{mapped}"
+            );
             let output = std::process::Command::new("/bin/sh")
                 .args(["-c", &mapped])
                 .env("ZDN_TEST_HELPER", &helper)
