@@ -22,10 +22,10 @@ See [permission limits](docs/aws-state.md#permissions-and-recovery).
 for the controller and optional separate Ironwood wallet. No Apple signing
 credentials are required. Source builds do not qualify the browser downloads.
 
-**First network:** follow the [complete installation and one-node walkthrough](docs/preview-start.md).
-It lists the exact downloads, verification commands, AWS setup, launch inputs
-and cleanup steps. The quick start below is a lifecycle overview, not a
-replacement for that setup.
+**First network:** [choose your node input](#choose-your-node-input), then follow
+the [quick start](#quick-start-start-a-network-try-it-tear-it-down) and
+[setup reference](#setup-and-operating-reference) for AWS access, launch inputs
+and cleanup.
 
 **Using an agent:** start with [agent operating instructions](docs/automation.md#agent-operating-checklist).
 Use the installed CLI's command schema, preserve operation IDs and receipts,
@@ -34,22 +34,68 @@ and require approval before billed or destructive work.
 **Looking for a specific task?** Use the [documentation index](docs/README.md)
 for payments, application connections, recovery, updates and removal.
 
-ZDN CLI payments use a separate Ironwood wallet program; Vizor and Zodl have not
-yet been tested with ZDN. Network
-management accepts a supported Testnet reward address without a wallet backend.
+ZDN CLI payments use a separate Ironwood wallet program. Network management
+accepts a supported Testnet reward address without a wallet backend.
 Do not select an address whose rewards you need to spend unless you control its key.
 
 You need Git, AWS CLI v2 and the AWS Session Manager plugin. ZDN installs its
 pinned Pulumi tools. You do not need local Docker for the remote source-build
 path. See [requirements](#requirements-and-build).
 
-The files are not publisher-signed. **Mac browser-download installation is
-blocked:** the published controller and wallet are not Developer ID signed or
-notarized, and Gatekeeper rejected both quarantined browser-downloaded executables
-in native testing. Successful unquarantined developer checks do not establish
-normal Mac browser installation support. Use the separate source-build path or
-the checked Linux download path; do not remove quarantine, re-sign files or
-disable Gatekeeper to follow these guides.
+## Choose your node input
+
+ZDN runs Zakura in Linux x86-64 containers on AWS. You can supply your own
+Git checkout and Dockerfile, or prepare a container using a Zakura-hosted binary.
+All paths must satisfy the [node image contract](docs/image-contract.md), including
+the custom-Testnet configuration and diagnostic RPCs; an arbitrary upstream
+release is not automatically compatible.
+
+### Your Git checkout
+
+Set `NODE_SOURCE` to the physical Git root of your Zakura checkout. ZDN captures
+tracked working files, including local edits, without requiring a commit or push:
+
+```bash
+zdn init --name demo --source "$NODE_SOURCE" --nodes 1
+```
+
+The default recipe is `docker/Dockerfile`, with the repository root as build
+context and `runtime` as the target. Add `--revision "$NODE_REV"` to capture an
+exact commit instead of working files. See [source capture](docs/source-capture.md).
+
+### Your Dockerfile
+
+Keep the Dockerfile and its build inputs inside the selected Git checkout.
+Select the recipe and context relative to that checkout's root:
+
+```bash
+zdn init --name demo --source "$NODE_SOURCE" --nodes 1 \
+  --dockerfile path/to/Dockerfile --build-context .
+```
+
+These are alternative `init` commands, not sequential steps. For either source
+path, `zdn devnet render` previews the build contract locally; `zdn up` reuses an
+exact verified image or builds the `runtime` target in AWS CodeBuild. See
+[source-to-image builds](docs/builds.md#4-cli-integration).
+
+### Zakura-hosted binaries or your own compiled binary
+
+Obtain and verify a Linux x86-64 binary from [Zakura](https://zakura.com/download/),
+or use your own compiled binary. **ZDN does not directly download or deploy a
+bare node executable.** Package it at `/usr/local/bin/zakurad` in a compatible
+Linux/amd64 image, publish that image to your team's ECR repository, and select
+its immutable child-manifest digest:
+
+```bash
+zdn init --name demo --nodes 1 --image "$NODE_IMAGE"
+```
+
+Set `NODE_IMAGE` to `ACCOUNT.dkr.ecr.REGION.amazonaws.com/zdn/TEAM/zakura@sha256:DIGEST`,
+replacing every placeholder. Supply the image record, exact registry manifest
+and configuration bytes with `--image-record`, `--image-manifest` and
+`--image-config` on the first render or launch. This path skips the ZDN source
+build. Follow the [existing-image deployment steps](docs/private-devnet.md#deploy)
+for the complete command and required chain, helper and AWS inputs.
 
 ## Quick start: start a network, try it, tear it down
 
@@ -63,7 +109,7 @@ Always select a Linux x86-64 executable for `HOST_HELPER`:
 | Your computer | Controller and helper |
 | --- | --- |
 | Linux x86-64 | Run the Linux controller. Use the release-selected Linux executable as helper. |
-| Apple Silicon Mac | Build the native controller [from source](docs/install-source.md) and use a separately pinned Linux helper. Browser-download installation remains blocked. |
+| Apple Silicon Mac | Build the native controller [from source](docs/install-source.md) and use a separately pinned Linux helper. |
 
 ### 1. Start the network
 
@@ -161,20 +207,16 @@ after 30 days. That schedule is not physical deletion or proof that billing has 
 - The one-node example uses a 25-second scheduled block target.
   Proof of work is disabled. This is not a public-network security test.
 - ZDN uses a trusted node. It is not a consensus light client or a production wallet.
-- Existing Linux executable checks cover x86-64 with GLIBC requirements through 2.34.
-  Native developer/offline checks cover Apple Silicon on macOS 27.0.1, not
-  successful execution of quarantined browser downloads.
 - See the selected release's notes for exact downloaded-file checks and
-  [preview scope](docs/preview.md). Mac browser-download onboarding is blocked;
-  full clean-machine, cross-distribution and current Mac live qualification
-  are not claimed.
+  [preview scope](docs/preview.md).
 - Checksums check bytes. They do not prove publisher identity or legal clearance.
   The release notes retain the license and Apple SDK rights limits.
 
 ## Setup and operating reference
 
 Use this section when you need the individual setup inputs and recovery rules.
-For an end-to-end first run, use the [installation walkthrough](docs/preview-start.md).
+For a first run, start with [node inputs](#choose-your-node-input) and the
+[quick start](#quick-start-start-a-network-try-it-tear-it-down).
 Agents operating ZDN should read [automation](docs/automation.md); contributors
 changing this repository should also read [AGENTS.md](AGENTS.md).
 
@@ -185,7 +227,6 @@ holds keys and signs payments.
 ### Requirements and build
 
 Install Git, AWS CLI v2 2.37.4 or later, and the native AWS Session Manager plugin.
-Python is not required to run ZDN.
 Install managed tools before you require a ready doctor result:
 
 ```bash
