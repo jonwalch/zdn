@@ -42,8 +42,10 @@ unsandboxed wallet executable are trusted. Vizor/Zodl remain untested.
 Linux live evidence covers the specific controller/helper, wallet, source
 capture, chain inputs and one-node workflow named in the release notes. Native
 Mac checks are narrower and do not establish a downloaded Mac execution/trust
-decision, a Mac AWS/payment journey or general platform support. Owner Mac
-qualification remains deferred. No quarantine removal, ad-hoc signing or
+decision, a Mac AWS/payment journey or general platform support. Remaining Mac
+qualification is agent-owned on an available native Mac environment, not deferred
+to manual owner testing. It remains unqualified until actual results are recorded.
+No quarantine removal, ad-hoc signing or
 Gatekeeper bypass is an installation step. Unsigned checksums provide integrity,
 not publisher authentication. No universal clean-machine or reproducible-build
 claim is made.

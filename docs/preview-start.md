@@ -21,8 +21,9 @@ do not authenticate the publisher. Releases are unsigned. Do not bypass OS trust
 - `pay-linux-x86_64`: the above plus the Linux wallet, wallet source and notices.
 - Mac profiles, when listed in this release's `distribution.json`, additionally
   require the native controller and the separate Linux helper. Do not substitute
-  the Mac executable for the remote Linux helper. Native Mac support remains
-  owner-deferred; no browser-downloaded, live or general-platform pass is claimed.
+  the Mac executable for the remote Linux helper. Remaining native Mac
+  qualification is agent-owned, not deferred to manual owner testing; no
+  browser-downloaded, live or general-platform pass is claimed without evidence.
 
 Download every file named by your profile into a fresh directory; optional
 wallets/private research bundles are not management prerequisites. Verify:
