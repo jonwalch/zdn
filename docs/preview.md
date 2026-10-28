@@ -59,7 +59,7 @@ disk deletion and independent 200/199-observation cleanup audits passed with the
 complete protected account baseline unchanged. The owned KMS key is scheduled
 for deletion, not physically deleted.
 
-See the [pinned evidence report](https://github.com/jonwalch/zcash-transparent-pq/blob/2d00031cbd1961179834b61620eb987a91d86146/docs/archive/validation/ZDN_PREVIEW3_NATIVE_JOURNEY_2026_10_28.md)
+See the [public qualification summary](preview3-native-validation.md)
 for exact component identities, selected subcases, earlier failures and limits.
 This is not full beta, general Mac support, signing/notarization, browser-download,
 lost-dispatch, hostile rollback or reorg qualification. Published assets are
