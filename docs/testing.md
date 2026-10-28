@@ -93,6 +93,29 @@ The workflow has read-only repository permissions, no cloud credentials, no
 cache, no release publishing, and no binary uploads. These tests do not exercise
 AWS, live nodes or payments. Keep those results separate as described below.
 
+### Hosted macOS process timeout investigation (2026-10-28)
+
+The [Preview 3 macOS ARM64 job](https://github.com/jonwalch/zdn/actions/runs/40700112519/job/122857306289)
+failed in the normal-exit branch of
+`memory_capture_kills_inherited_helpers_on_timeout_and_normal_exit`:
+`/bin/sh command exceeded its time limit`. The release documentation changes did
+not modify this test or `src/dependencies.rs`.
+
+The unchanged focused test subsequently passed **20/20** serial repetitions on
+native Apple Silicon macOS 27.0.1, Rust 1.97.1, with physical TMPDIR and default
+SIGINT. The dependencies binary also passed **27/27** under default parallelism.
+Linux independently passed the same focused 20 repetitions and all 27 dependency
+tests. These are not the hosted macOS 15 environment or a new full-suite pass.
+
+Both fixture branches use a 100 ms deadline. It starts after `spawn` returns and
+includes subsequent shell execution, child-exit polling, owned-group cleanup
+and both pipe EOF observations; a further 10 ms polling iteration may be needed
+after cleanup. The hosted failure has no phase trace to distinguish scheduling,
+shell execution, cleanup or EOF delay. **The failure was not reproduced and its
+cause remains unverified**, not proven flaky or fixed. Runtime/test behavior and
+deadlines remain unchanged; no hosted job was manually rerun. If it recurs,
+collect phase evidence before changing deadlines or cleanup behavior.
+
 ## Focused test map
 
 All commands below run from the repository root. Filesystem/process fixtures
