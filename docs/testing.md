@@ -54,9 +54,10 @@ suite, strict all-target Clippy, and a locked release build. Jobs have a
 the other platforms. Host/compiler architecture checks reject accidental
 cross-compilation; only actual successful runner executions establish evidence.
 
-The host-runtime execution fixtures in `tests/host.rs::native_runtime` run only
-on Linux x86-64, matching the deployed host/helper platform. They must not run
-an ARM controller as an x86-64 helper or weaken the production ELF check.
+The host-runtime execution fixtures in `tests/host.rs::native_runtime` and
+`tests/lightwallet_native_install.rs` run only on Linux x86-64, matching the
+deployed host/helper platform. They must not run an ARM controller as an x86-64
+helper or weaken the production ELF check.
 Portable host manifests, input validation and wrong-architecture rejection
 remain covered on the other native platforms.
 

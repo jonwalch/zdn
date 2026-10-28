@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
