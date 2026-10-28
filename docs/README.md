@@ -13,6 +13,7 @@ Mac browser-download installation is blocked; see [current limits](preview.md).
 | Task | Guide |
 | --- | --- |
 | Understand ZDN | [Project overview](../README.md) |
+| Install controller and separate wallet from source, free | [Manual and Homebrew source installation](install-source.md) |
 | Install verified downloads and start one node | [First network](preview-start.md) |
 | Check platform support, trust and preview limits | [Preview scope](preview.md) |
 | Operate with an agent or machine-readable output | [CLI automation](automation.md) |

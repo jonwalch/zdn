@@ -13,6 +13,7 @@ cost money, including retained disks and storage after network removal.
 
 | Goal | Start here |
 | --- | --- |
+| Install local programs without paid signing | [Manual and Homebrew source builds](install-source.md) |
 | Start and remove a network | [Installation and first network](preview-start.md) |
 | Connect an application or another participant | [Private connections](connections.md) |
 | Fund, send and recover CLI payments | [Wallet walkthrough](wallet.md#first-payment-alice-and-bob) |

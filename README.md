@@ -18,6 +18,10 @@ See [permission limits](docs/aws-state.md#permissions-and-recovery).
 
 ## Start here
 
+**Install from source (free):** use the [manual or source-building Homebrew path](docs/install-source.md)
+for the controller and optional separate Ironwood wallet. No Apple signing
+credentials are required. Source builds do not qualify the browser downloads.
+
 **First network:** follow the [complete installation and one-node walkthrough](docs/preview-start.md).
 It lists the exact downloads, verification commands, AWS setup, launch inputs
 and cleanup steps. The quick start below is a lifecycle overview, not a
@@ -43,8 +47,9 @@ The files are not publisher-signed. **Mac browser-download installation is
 blocked:** the published controller and wallet are not Developer ID signed or
 notarized, and Gatekeeper rejected both quarantined browser-downloaded executables
 in native testing. Successful unquarantined developer checks do not establish
-normal Mac installation support. Use the checked Linux path for now; do not
-remove quarantine, re-sign files or disable Gatekeeper to follow these guides.
+normal Mac browser installation support. Use the separate source-build path or
+the checked Linux download path; do not remove quarantine, re-sign files or
+disable Gatekeeper to follow these guides.
 
 ## Quick start: start a network, try it, tear it down
 
@@ -58,7 +63,7 @@ Always select a Linux x86-64 executable for `HOST_HELPER`:
 | Your computer | Controller and helper |
 | --- | --- |
 | Linux x86-64 | Run the Linux controller. Use the release-selected Linux executable as helper. |
-| Apple Silicon Mac | Browser-download installation is blocked. Native developer setup needs the Mac controller and a separately pinned Linux helper. |
+| Apple Silicon Mac | Build the native controller [from source](docs/install-source.md) and use a separately pinned Linux helper. Browser-download installation remains blocked. |
 
 ### 1. Start the network
 
@@ -192,7 +197,9 @@ zdn doctor
 or permissions. A ready result does not authorize a deployment.
 See [managed dependencies](docs/dependencies.md).
 
-To build ZDN from source, use the Rust toolchain in `rust-toolchain.toml`:
+For an installed release build, follow [source installation](docs/install-source.md)
+(manual or Homebrew), including the separate optional wallet. For development,
+use the Rust toolchain in `rust-toolchain.toml`:
 
 ```bash
 cargo build --locked

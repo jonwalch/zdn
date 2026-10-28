@@ -6,6 +6,11 @@ Use a new private work directory and keep the same shell and saved receipts
 through cleanup. Commands that create or delete AWS resources are identified
 below; verification commands do not grant permission to run those operations.
 
+For a free local build, first [install the controller and optional wallet from
+source](install-source.md), then use [source-installed setup](#source-installed-controller)
+below instead of the executable-download profile. The remaining network setup
+is shared; local installation does not authorize AWS operations.
+
 **Platform status:** use the checked Linux x86-64 path for a first installation.
 Mac browser-download onboarding is **blocked**: Gatekeeper rejected the published
 quarantined controller and wallet downloaded through Chrome. They are not
@@ -21,6 +26,49 @@ a spending cap. ZDN trusts the selected validating node and the separately pinne
 unsandboxed local wallet backend; it is not a consensus-verifying light client.
 Wallet stores/backups contain plaintext secrets. Deployment credentials can read
 and cancel other SSM commands in the configured region absent external denies.
+
+## Source-installed controller
+
+Keep the source guide's absolute `ZDN` and optional physical `IW`/`IW_SHA256`
+variables. Do not replace them with the published executable paths/hashes below.
+Install Git, AWS CLI v2 >=2.37.4 and the native Session Manager plugin from their
+official channels. Source installation does not supply node/chain inputs or a
+remote helper. In a new private downloads directory, obtain these exact Preview 2
+inputs; verify the pins through your trusted release channel first:
+
+```sh
+set -eu
+umask 077
+SOURCE_INSTALLED=1
+mkdir zdn-network-inputs
+cd zdn-network-inputs
+DOWNLOADS="$PWD"
+BASE=https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.2
+for asset in zdn-node-source-f39268e2-public.tar.gz zdn-node-source-map.json \
+  zdn-chain-manifest.json zdn-chain.tar zdn-0.1.0-preview.2-helper-linux-x86_64; do
+  curl --fail --location --output "$asset" "$BASE/$asset"
+done
+printf '%s\n' \
+  'c469315debf3c25385764135a6b34dd9764a47e77a406affac6923fbddcf4cd1  zdn-node-source-f39268e2-public.tar.gz' \
+  '8446fd55b31df1dca7158e7abec3918249d2f83339b9b0d6d62c304938afec9b  zdn-node-source-map.json' \
+  '7c8b86d229ce3d148ab11cb70582fae51a49ce1c18a4a550aa2b55aedc0d55d3  zdn-chain-manifest.json' \
+  'd7a004dd471aff559631201f75001042cf4c1796cc9271cf82b109e1faaa9613  zdn-chain.tar' \
+  '80ad10bf0f34d241d239a3010e9933764505ecdabf0e1a45bd4f44ad9190c5b2  zdn-0.1.0-preview.2-helper-linux-x86_64' > source-inputs.SHA256SUMS
+case "$(uname -s)" in
+  Darwin) shasum -a 256 -c source-inputs.SHA256SUMS ;;
+  Linux) sha256sum -c source-inputs.SHA256SUMS ;;
+  *) echo 'Select a qualified native platform' >&2; exit 1 ;;
+esac
+HOST_HELPER="$DOWNLOADS/zdn-0.1.0-preview.2-helper-linux-x86_64"
+chmod 700 "$HOST_HELPER"
+```
+
+The helper is always Linux x86-64, including on a Mac. It is not executed locally
+on the Mac. Keep corresponding controller source/notices from installation with
+these inputs. Skip the executable-download profile below and continue at
+[shared local preflight](#shared-local-preflight), then section 2. For payments
+retain your source-built wallet path/hash in section 3. Do not use the downloaded
+wallet's hash for a local build. This setup does not claim new live qualification.
 
 ## 1. Select and verify a profile
 
@@ -74,6 +122,8 @@ case "$(uname -s)/$(uname -m)" in
 esac
 chmod 700 "$ZDN" "$HOST_HELPER"
 ```
+
+### Shared local preflight
 
 On Apple Silicon only, before the following shared commands, establish a short,
 private physical temporary directory and probe a real UNIX socket. This uses the
@@ -184,6 +234,7 @@ backend/source target Common 3.0.0, custom Testnet with NU6.3 at height 1 and no
 NU7. They are not general Mainnet/Testnet wallet support. Vizor/Zodl are untested.
 
 ```sh
+if [ "${SOURCE_INSTALLED:-0}" != 1 ]; then
 case "$(uname -s)" in
   Linux)
     IW="$DOWNLOADS/ironwood-wallet-0.1.0-preview.2-linux-x86_64"
@@ -193,6 +244,7 @@ case "$(uname -s)" in
     IW_SHA256=32586aeb68351864584c36dfae7ac2e43c06965bb1037999a9fdf6829f775ad2 ;;
 esac
 chmod 700 "$IW"
+fi
 NETWORK=EXACT_UUID_FROM_BIND
 "$IW" capabilities
 "$ZDN" wallet backend set --backend "$IW" --backend-sha256 "$IW_SHA256"
@@ -205,13 +257,8 @@ Require `scan_only:false`, independent public identities and capabilities
 `ironwood-wallet-state/v2`, `ironwood-wallet-state-observation/v2` and
 `ironwood-wallet-snapshot-payment/v2`. Set `REWARD_ADDRESS` to funding's
 `public.reward_address`. Key-only imports are scan-only, not restored signing
-stores. The wallet-source archive preserves `experiments/ironwood-wallet/` and
-its lockfile, licenses and attribution. To build it instead, use Rust/Cargo
-1.97.1 and native C/linker tools, then from that archive's extracted root run:
-
-```sh
-cargo build --release --locked --manifest-path experiments/ironwood-wallet/Cargo.toml --bin ironwood-wallet
-```
+stores. For the separate wallet archive's extraction layout, source-build
+commands, installation and attribution, use [source installation](install-source.md).
 
 Hash and record your newly built binary separately; do not attribute the
 downloaded executable's hash or live results to different bytes.

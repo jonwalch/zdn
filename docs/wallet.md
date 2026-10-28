@@ -42,8 +42,9 @@ signatures are intact, but they are not Developer ID signed or
 notarized. Unquarantined developer/offline checks pass, but do not qualify the
 browser-download installation path. Do not remove quarantine, re-sign the files,
 disable Gatekeeper or otherwise bypass the installation limitation. Mac users
-cannot complete this public download walkthrough with those artifacts; wait for
-a release with a verified supported installation path.
+cannot complete this public download walkthrough with those artifacts. Instead,
+use the separate [free source installation](install-source.md) (manual or
+source-building Homebrew); this does not qualify the blocked browser binaries.
 
 Network-management downloads do not by themselves include a usable wallet.
 Select the payment profile in the [public preview release](https://github.com/jonwalch/zdn/releases)
@@ -61,14 +62,11 @@ Its exact `zakura-*` dependencies are Common 3.0.0 (authoritative
 Common source `0b13ab9e66ea8855a7b4305b17e44fdccbeb3d58`), not arbitrary newer
 wallet libraries. This source reference is not a publisher-signed binary release.
 
-For a reviewed source build, verify and extract the release's wallet-source
-archive into a fresh directory. Use Rust/Cargo 1.97.1 and native C/linker tools
-(bundled SQLite is compiled locally). The archive preserves
-`experiments/ironwood-wallet/`; from its extracted root, the build command is:
-
-```sh
-cargo build --release --locked --manifest-path experiments/ironwood-wallet/Cargo.toml --bin ironwood-wallet
-```
+For a reviewed source build, follow [source installation](install-source.md) for
+the exact archive checksum, wrapper/subtree extraction layout, Rust/Cargo 1.97.1
+manual commands and the source-building Homebrew alternative. Native C/linker
+tools compile bundled SQLite. Homebrew backend selection must use the physical
+versioned Cellar executable, not its `bin` or `opt` symlink.
 
 Do not substitute a node build or run proof-generation examples to install it.
 Record the source revision, lockfile hash, toolchain, executable hash and notices.

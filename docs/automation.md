@@ -14,7 +14,9 @@ for a person connecting to an existing network.
 1. **Discover the installed contract.** Read `zdn reference --schema` and the
    relevant long help. Do not invent flags, assume every command supports machine
    output, or treat `--help` as a dry run.
-2. **Choose the task.** For a first network, follow [installation](preview-start.md).
+2. **Choose the task.** To install the controller and optional wallet, use
+   [source installation](install-source.md) (manual or source-building Homebrew).
+   For a first network, follow [installation](preview-start.md).
    For an existing network, use its original profile, state directory, network
    UUID and receipts. For participant-only access, follow [connections](connections.md)
    rather than creating a second team.
