@@ -1,6 +1,6 @@
 # Install ZDN and start your first network
 
-This walkthrough installs Preview 2, creates a disposable one-node network,
+This walkthrough installs Preview 3 (experimental alpha), creates a disposable one-node network,
 optionally sends test coins, and removes the network and team resources.
 Use a new private work directory and keep the same shell and saved receipts
 through cleanup. Commands that create or delete AWS resources are identified
@@ -11,12 +11,13 @@ source](install-source.md), then use [source-installed setup](#source-installed-
 below instead of the executable-download profile. The remaining network setup
 is shared; local installation does not authorize AWS operations.
 
-**Platform status:** use the checked Linux x86-64 path for a first installation.
-Mac browser-download onboarding is **blocked**: Gatekeeper rejected the published
-quarantined controller and wallet downloaded through Chrome. They are not
-Developer ID signed or notarized. The Mac commands below document native
-developer setup, not a working browser-install path or a current Mac live pass.
-Do not remove quarantine, re-sign files or bypass Gatekeeper to proceed.
+**Platform status:** Linux x86-64 has executable downloads; macOS uses the
+[source installation](install-source.md) only. Preview 3 contains no Mac
+executables or Mac executable-download profiles. Earlier Preview 2 downloads
+were blocked by Gatekeeper and have been withdrawn. Source builds do not require
+Developer ID signing or notarization. Never remove quarantine, re-sign downloaded
+files or bypass Gatekeeper to proceed. Candidate-specific live results are
+reported in the release notes, not inferred from a successful local installation.
 See [preview limits](preview.md#platform-and-trust-limits).
 
 Experimental custom Testnet for trusted developers in a dedicated development
@@ -33,7 +34,7 @@ Keep the source guide's absolute `ZDN` and optional physical `IW`/`IW_SHA256`
 variables. Do not replace them with the published executable paths/hashes below.
 Install Git, AWS CLI v2 >=2.37.4 and the native Session Manager plugin from their
 official channels. Source installation does not supply node/chain inputs or a
-remote helper. In a new private downloads directory, obtain these exact Preview 2
+remote helper. In a new private downloads directory, obtain these exact Preview 3
 inputs; verify the pins through your trusted release channel first:
 
 ```sh
@@ -43,9 +44,9 @@ SOURCE_INSTALLED=1
 mkdir zdn-network-inputs
 cd zdn-network-inputs
 DOWNLOADS="$PWD"
-BASE=https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.2
+BASE=https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.3
 for asset in zdn-node-source-f39268e2-public.tar.gz zdn-node-source-map.json \
-  zdn-chain-manifest.json zdn-chain.tar zdn-0.1.0-preview.2-helper-linux-x86_64; do
+  zdn-chain-manifest.json zdn-chain.tar zdn-0.1.0-preview.3-linux-x86_64; do
   curl --fail --location --output "$asset" "$BASE/$asset"
 done
 printf '%s\n' \
@@ -53,18 +54,19 @@ printf '%s\n' \
   '8446fd55b31df1dca7158e7abec3918249d2f83339b9b0d6d62c304938afec9b  zdn-node-source-map.json' \
   '7c8b86d229ce3d148ab11cb70582fae51a49ce1c18a4a550aa2b55aedc0d55d3  zdn-chain-manifest.json' \
   'd7a004dd471aff559631201f75001042cf4c1796cc9271cf82b109e1faaa9613  zdn-chain.tar' \
-  '80ad10bf0f34d241d239a3010e9933764505ecdabf0e1a45bd4f44ad9190c5b2  zdn-0.1.0-preview.2-helper-linux-x86_64' > source-inputs.SHA256SUMS
+  '335ce83c461a087bb359b2d98f509815061595e9dfdfe57ef2325ff014d0085a  zdn-0.1.0-preview.3-linux-x86_64' > source-inputs.SHA256SUMS
 case "$(uname -s)" in
   Darwin) shasum -a 256 -c source-inputs.SHA256SUMS ;;
   Linux) sha256sum -c source-inputs.SHA256SUMS ;;
   *) echo 'Select a qualified native platform' >&2; exit 1 ;;
 esac
-HOST_HELPER="$DOWNLOADS/zdn-0.1.0-preview.2-helper-linux-x86_64"
+HOST_HELPER="$DOWNLOADS/zdn-0.1.0-preview.3-linux-x86_64"
 chmod 700 "$HOST_HELPER"
 ```
 
-The helper is always Linux x86-64, including on a Mac. It is not executed locally
-on the Mac. Keep corresponding controller source/notices from installation with
+The Linux controller download is also the Linux x86-64 host/build helper,
+including when managing from a Mac. It is not executed locally on the Mac.
+Keep corresponding controller source/notices from installation with
 these inputs. Skip the executable-download profile below and continue at
 [shared local preflight](#shared-local-preflight), then section 2. For payments
 retain your source-built wallet path/hash in section 3. Do not use the downloaded
@@ -72,7 +74,7 @@ wallet's hash for a local build. This setup does not claim new live qualificatio
 
 ## 1. Select and verify a profile
 
-Obtain assets from <https://github.com/jonwalch/zdn/releases/tag/v0.1.0-preview.2>.
+Obtain assets from <https://github.com/jonwalch/zdn/releases/tag/v0.1.0-preview.3>.
 The release body pins each `SHA256SUMS.PROFILE` list. Compare that list's digest
 through a trusted release channel before using it; co-downloaded checksums alone
 do not authenticate the publisher. Releases are unsigned. Do not bypass OS trust.
@@ -81,10 +83,9 @@ do not authenticate the publisher. Releases are unsigned. Do not bypass OS trust
   product source, required notices and this guide. The controller is also the
   Linux host/build helper.
 - `pay-linux-x86_64`: the above plus the Linux wallet, wallet source and notices.
-- Mac profiles, when listed in this release's `distribution.json`, additionally
-  require the native controller and the separate Linux helper. Do not substitute
-  the Mac executable for the remote Linux helper. Their presence in the release
-  does not mean browser installation works; see the platform warning above.
+- macOS: use the source-installed path above, not an executable-download profile.
+  Its remote helper is the same Linux controller asset, not the locally built
+  Mac executable. No Mac executable is listed in this release's index.
 
 Download every file named by your profile into a fresh directory. Wallet files
 are required for the payment profile, not the management-only profile. Verify:
@@ -93,14 +94,6 @@ are required for the payment profile, not the management-only profile. Verify:
 # Linux payment profile; use manage-linux-x86_64 if not making payments.
 sha256sum SHA256SUMS.pay-linux-x86_64
 sha256sum -c SHA256SUMS.pay-linux-x86_64
-```
-
-For the Mac payment profile, instead use (or select `manage-macos-arm64` for
-management without CLI payments):
-
-```sh
-shasum -a 256 SHA256SUMS.pay-macos-arm64
-shasum -a 256 -c SHA256SUMS.pay-macos-arm64
 ```
 
 Do not use `--ignore-missing`. Keep sources/licenses/notices with the binaries.
@@ -113,12 +106,9 @@ umask 077
 DOWNLOADS="$PWD"
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64)
-    ZDN="$DOWNLOADS/zdn-0.1.0-preview.2-linux-x86_64"
+    ZDN="$DOWNLOADS/zdn-0.1.0-preview.3-linux-x86_64"
     HOST_HELPER="$ZDN" ;;
-  Darwin/arm64)
-    ZDN="$DOWNLOADS/zdn-0.1.0-preview.2-macos-arm64"
-    HOST_HELPER="$DOWNLOADS/zdn-0.1.0-preview.2-helper-linux-x86_64" ;;
-  *) echo 'Select a supported native profile; do not substitute architectures' >&2; exit 1 ;;
+  *) echo 'Use the source-installed path on macOS; do not substitute architectures' >&2; exit 1 ;;
 esac
 chmod 700 "$ZDN" "$HOST_HELPER"
 ```
@@ -132,7 +122,7 @@ all commands and cleanup have finished:
 
 ```sh
 test -x /usr/bin/perl
-TMPDIR=$(mktemp -d /private/tmp/zdn-p2-XXXXXXXX)
+TMPDIR=$(mktemp -d /private/tmp/zdn-p3-XXXXXXXX)
 test "$(cd "$TMPDIR" && pwd -P)" = "$TMPDIR"
 test "$(stat -f %Lp "$TMPDIR")" = 700
 export TMPDIR
@@ -237,11 +227,9 @@ NU7. They are not general Mainnet/Testnet wallet support. Vizor/Zodl are unteste
 if [ "${SOURCE_INSTALLED:-0}" != 1 ]; then
 case "$(uname -s)" in
   Linux)
-    IW="$DOWNLOADS/ironwood-wallet-0.1.0-preview.2-linux-x86_64"
+    IW="$DOWNLOADS/ironwood-wallet-0.1.0-preview.3-linux-x86_64"
     IW_SHA256=308ff96fecbc31f17b714dc37408af5dc407902c412d3e810be66bc3fa9a6bf6 ;;
-  Darwin)
-    IW="$DOWNLOADS/ironwood-wallet-0.1.0-preview.2-macos-arm64"
-    IW_SHA256=32586aeb68351864584c36dfae7ac2e43c06965bb1037999a9fdf6829f775ad2 ;;
+  *) echo 'Install the wallet from source on macOS first' >&2; exit 1 ;;
 esac
 chmod 700 "$IW"
 fi

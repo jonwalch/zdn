@@ -1,16 +1,16 @@
 class Zdn < Formula
   desc "Controller for isolated Zcash development networks (experimental preview)"
   homepage "https://github.com/jonwalch/zdn"
-  url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.2/zdn-product-source-e4dbcae.tar.gz"
-  version "0.1.0-preview.2"
-  sha256 "4d13b892e07ecf22a8db70974f8c69df86cd7764d16812eda7b774371c10ea26"
+  url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.3/zdn-product-source-fe2ccf3.tar.gz"
+  version "0.1.0-preview.3"
+  sha256 "5e7c167e690d42b1f16d46716cf6351e7a8d3a9cdbce59b3746ac5c98c272737"
   license any_of: ["MIT", "Apache-2.0"]
 
   depends_on "rust" => :build
 
   resource "required-notices" do
-    url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.2/zdn-required-notices-preview.2.tar.gz"
-    sha256 "c4fa717988bd5f296a650f81637d93f7e5f53c3d6d4103d473a7e7cd5a11f689"
+    url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.3/zdn-required-notices-preview.3.tar.gz"
+    sha256 "00a1b43dd005ac6c73d5f5c65c531845d448d9d17aaa8416a5758235ea5c89fd"
   end
 
   def install
@@ -24,7 +24,7 @@ class Zdn < Formula
 
   def caveats
     <<~EOS
-      Built locally from Preview 2 source e4dbcae; not the browser executable.
+      Built locally from Preview 3 source fe2ccf3; no macOS release executable.
       This publisher tap is not reviewed or endorsed by Homebrew-core.
       AWS CLI/Session Manager and network launch inputs are separate prerequisites.
       Optional CLI payments require the separately installed ironwood-wallet.

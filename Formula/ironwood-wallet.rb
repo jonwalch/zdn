@@ -1,15 +1,15 @@
 class IronwoodWallet < Formula
   desc "Separate experimental Ironwood Testnet wallet backend for ZDN"
   homepage "https://github.com/jonwalch/zdn"
-  url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.2/ironwood-wallet-source-70ccc7f.tar.gz"
-  version "0.1.0-preview.2"
+  url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.3/ironwood-wallet-source-70ccc7f.tar.gz"
+  version "0.1.0-preview.3"
   sha256 "5fadd8187145d577d98a265dd50279483390e67b6617e50b1cabbb097d30a4d2"
   license any_of: ["MIT", "Apache-2.0"]
 
   depends_on "rust" => :build
 
   resource "required-notices" do
-    url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.2/ironwood-wallet-required-notices-preview.2.tar.gz"
+    url "https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.3/ironwood-wallet-required-notices-preview.2.tar.gz"
     sha256 "e195ddedd8928b40c6748370dafa0c03df045b46fa51e8630813aac67fe3650b"
   end
 

@@ -30,15 +30,14 @@ require a wallet download. Vizor and Zodl have not been qualified with ZDN.
 - **Linux x86-64:** executable checks cover GLIBC requirements through 2.34 and
   the specific one-node workflow identified in the release notes. This is not
   universal Linux distribution or clean-machine support.
-- **Apple Silicon Mac:** native developer/offline checks pass on macOS 27.0.1,
-  but **browser-download installation is blocked**. Gatekeeper rejected both the
-  quarantined controller and wallet downloaded through Chrome. Their bytes match
-  the published downloads and their ad-hoc signatures are intact; neither is
-  Developer ID signed or notarized. Unquarantined developer execution is not
-  evidence that ordinary downloaded files work.
-  Current Mac AWS/payment qualification is not complete. Do not remove
-  quarantine, re-sign downloads or bypass Gatekeeper; use the checked Linux
-  path for now.
+- **Apple Silicon Mac:** [build locally from source](install-source.md), manually
+  or with the publisher Homebrew tap. Preview 3 distributes no Mac executables or
+  Mac executable-download profiles. Earlier Preview 2 browser downloads failed
+  Gatekeeper assessment and were withdrawn, not made usable by changing security
+  settings. Native source installation/offline checks pass on macOS 27.0.1;
+  candidate-specific AWS/payment coverage is recorded in the release notes.
+  No Intel Mac, clean-machine or universal macOS support is claimed. Never remove
+  quarantine, re-sign downloaded files or bypass Gatekeeper to proceed.
 - **Unsigned distribution:** checksums identify bytes, not publisher identity,
   artifact safety or legal clearance. Verify pins through a trusted channel.
   No reproducible-build or general platform-support claim is made.
@@ -51,11 +50,18 @@ RPC port or capability response is not a payment test.
 
 ## Source identities and notices
 
-Preview 2 runtime binaries were built from product revision
-`e4dbcae3367bdc440fa9ec966b6d82663cb3a5ee`. The product-source archive identifies
+Preview 3 controller/helper and source installation use product revision
+`fe2ccf325b57f8538973c31bcf26322a416eae55`. The product-source archive identifies
 that exact build; maintained repository documentation can be newer. The internal
 `0.1.0` version alone is not a binary pin. Use the exact hashes and source
 identities in `distribution.json` and the release notes.
+
+The standalone wallet remains source `70ccc7f45ef9ecdea46151719b82b356b48e2d76`
+(Common 3.0.0). Its source, Linux executable and original wallet-notices download
+are republished unchanged; local Mac builds have their own executable hashes.
+The new controller-notices wrapper records applicability to the unchanged
+manifests/lockfile and target dependency closures, retaining original supplements
+and attribution without transferring their historical live claims.
 
 The public node-source archive has its own Git identity and a source map of
 included files, modes and hashes. Its historical research origin is revision
