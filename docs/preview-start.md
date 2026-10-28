@@ -268,10 +268,14 @@ Only then demonstrate Bob's control of the received note:
 # Set BOB_TXID from the successful result before continuing.
 "$ZDN" tx demo "$BOB_TXID"
 "$ZDN" wallet sync demo --wallet alice
-"$ZDN" wallet sync demo --wallet bob
 "$ZDN" wallet balance demo --wallet alice
+"$ZDN" wallet sync demo --wallet bob
 "$ZDN" wallet balance demo --wallet bob
 ```
+
+Sync and classify each wallet together. If either read-only observation reports
+an incomplete scan or a moving tip, resync that same wallet and retry its balance
+before continuing; another wallet's sync does not refresh this one's store.
 
 Final expected confirmed/spendable balances: Alice **93,990,000 zat**, Bob
 **5,990,000 zat**, no pending/reserved deductions. This asymmetric three-payment
@@ -284,7 +288,10 @@ rollback, multi-node behavior, arbitrary reorgs or full beta/platform support.
 A lost reply or timeout is not permission to create a replacement payment.
 Inspect `wallet journal demo` and `tx demo TXID`; resume the same original
 fund/send arguments with `--operation-id ORIGINAL_UUID`. Preserve signed bytes
-and every journal/recovery receipt. Never manually `submit` journaled bytes or
+and every journal/recovery receipt. If an incomplete scan reports `payment not
+prepared`, save its returned operation UUID, sync the sender, then resume those
+same arguments with that UUID; do not start a new operation.
+Never manually `submit` journaled bytes or
 force-unlock/delete uncertain state. Unknown build dispatch likewise must be
 inspected/reconciled, not blindly repeated. See current public `docs/wallet.md`,
 `docs/private-devnet.md`, `docs/removal.md` and `docs/aws-state.md`.
