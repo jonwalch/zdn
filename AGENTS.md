@@ -35,3 +35,22 @@ Defaults: Zakura only, isolated custom Testnet, Ironwood payment pool,
 node-only services (optional lightwalletd installation is implemented, with
 client/payment compatibility unqualified), 25-second block target,
 private access, three medium nodes, AWS/EC2/Docker, Pulumi with team-owned S3 state.
+
+## Commit and pull request guidelines
+
+- Keep each PR focused and use [the PR template](.github/pull_request_template.md).
+  Keep descriptions proportional to the change and remove inapplicable sections.
+- Use [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) PR
+  titles: `type(optional-scope): summary`, such as `fix(wallet): preserve payment
+  IDs on retry` or `docs: clarify node inputs`. Use the same format for commits.
+- Explain the motivation and solution. For fixes, connect the root cause to the
+  solution and the regression coverage.
+- List the exact checks run and their outcomes. Documentation-only PRs need
+  link, command-syntax and diff checks, not a Rust test run. Mark unrun checks
+  pending with a reason; do not imply fixture tests qualify live AWS or nodes.
+- Call out changes to CLI/configuration compatibility, IAM permissions, wallet
+  secrets, persistent state, costs and recovery/removal when applicable. Never
+  include credentials, wallet data, private receipts or personal email addresses
+  in PR content or commit attribution; use a verified GitHub noreply identity.
+- Opening a PR does not authorize heavy validation, publication, deployment,
+  merging or bypassing branch protections. Follow the approval rules above.
