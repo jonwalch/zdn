@@ -1,3 +1,5 @@
+# Automatic CI is paused while hosted validation is unsupported.
+# Restore the .yml filename to re-enable this preserved workflow.
 name: Native validation
 
 on:

@@ -44,8 +44,15 @@ signals, and test assertions.
 Run these checks on a machine or runner matching the target OS and architecture.
 Cross-compilation does not substitute for executing the tests on that platform.
 
-[Native validation](../.github/workflows/native-validation.yml) runs automatically
-on pull requests and pushes to `main`, on `ubuntu-24.04` (Linux x86-64),
+Automatic GitHub Actions validation is paused while hosted CI is unsupported.
+Run the standard checks above locally; the pause does not resolve the hosted
+failures or establish a pass on untested platforms. The
+[preserved workflow](../.github/workflows/native-validation.yml.disabled) has a
+`.disabled` suffix so GitHub does not load it. Restore its `.yml` filename to
+re-enable automatic validation.
+
+The preserved workflow is configured for pull requests and pushes to `main`,
+on `ubuntu-24.04` (Linux x86-64),
 `ubuntu-24.04-arm` (Linux ARM64), `macos-15-intel` (macOS Intel), and `macos-15`
 (macOS ARM64). Each native runner installs the exact `rust-toolchain.toml`
 toolchain with rustfmt/Clippy, then runs formatting, the full locked ordinary
@@ -135,7 +142,7 @@ root cause. EOF observations can precede group cleanup in the last iteration.
 The added fields contain no captured output, command arguments, environment,
 or process IDs; the existing program-name error prefix is retained. A cleanup
 that never returns cannot produce a later polling-loop diagnostic. Use the next
-hosted failure's observations before changing deadlines or cleanup behavior.
+observed failure's diagnostics before changing deadlines or cleanup behavior.
 
 ## Focused test map
 
