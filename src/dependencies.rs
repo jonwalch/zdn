@@ -235,20 +235,46 @@ fn memory_command(
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut status = None;
+    let mut child_exit_observed_at: Option<Duration> = None;
+    let mut cleanup_completed_at: Option<Duration> = None;
+    let mut stdout_eof = None;
+    let mut stderr_eof = None;
     loop {
-        ensure!(
-            started.elapsed() <= timeout,
-            "{program} command exceeded its time limit"
-        );
+        let elapsed = started.elapsed();
+        if elapsed > timeout {
+            let phase = if stdout_eof.is_none() {
+                "before-first-poll"
+            } else if status.is_none() {
+                "waiting-for-child-exit"
+            } else if cleanup_completed_at.is_some_and(|at| at > timeout) {
+                "cleanup-crossed-deadline"
+            } else {
+                "waiting-for-pipe-eof"
+            };
+            // Report only lifecycle observations, never captured output, argv,
+            // environment, or numeric process IDs. These precede Drop cleanup.
+            bail!(
+                "{program} command exceeded its time limit; phase={phase} elapsed_ms={} timeout_ms={} child_exit_observed_at_ms={:?} child_exit_code={:?} cleanup_completed_at_ms={:?} stdout_eof={stdout_eof:?} stderr_eof={stderr_eof:?}",
+                elapsed.as_millis(),
+                timeout.as_millis(),
+                child_exit_observed_at.map(|at| at.as_millis()),
+                status.as_ref().and_then(std::process::ExitStatus::code),
+                cleanup_completed_at.map(|at| at.as_millis()),
+            );
+        }
         let stdout_done = drain_pipe(&mut stdout, &mut out)?;
+        stdout_eof = Some(stdout_done);
         let stderr_done = drain_pipe(&mut stderr, &mut err)?;
+        stderr_eof = Some(stderr_done);
         if status.is_none() {
             status = child.child.try_wait()?;
             if status.is_some() {
+                child_exit_observed_at = Some(started.elapsed());
                 // Reap owned helpers on success as well as failure. A
                 // helper which detached into another group is outside our
                 // cleanup scope; its inherited pipes still obey the deadline.
                 child.cleanup();
+                cleanup_completed_at = Some(started.elapsed());
             }
         }
         if let Some(status) = status {

@@ -101,7 +101,12 @@ failed in the normal-exit branch of
 `/bin/sh command exceeded its time limit`. The release documentation changes did
 not modify this test or `src/dependencies.rs`.
 
-The unchanged focused test subsequently passed **20/20** serial repetitions on
+The [later onboarding-docs macOS ARM64 job](https://github.com/jonwalch/zdn/actions/runs/40739231689/job/122995976260)
+failed at the same normal-exit assertion with the same timeout. Both hosted
+environments reported macOS 15.7.9 / 24G830 and Rust 1.97.1; runtime, test,
+lockfile, toolchain and workflow inputs were unchanged between those commits.
+
+After the first failure, the unchanged focused test passed **20/20** serial repetitions on
 native Apple Silicon macOS 27.0.1, Rust 1.97.1, with physical TMPDIR and default
 SIGINT. The dependencies binary also passed **27/27** under default parallelism.
 Linux independently passed the same focused 20 repetitions and all 27 dependency
@@ -111,10 +116,26 @@ Both fixture branches use a 100 ms deadline. It starts after `spawn` returns and
 includes subsequent shell execution, child-exit polling, owned-group cleanup
 and both pipe EOF observations; a further 10 ms polling iteration may be needed
 after cleanup. The hosted failure has no phase trace to distinguish scheduling,
-shell execution, cleanup or EOF delay. **The failure was not reproduced and its
-cause remains unverified**, not proven flaky or fixed. Runtime/test behavior and
-deadlines remain unchanged; no hosted job was manually rerun. If it recurs,
-collect phase evidence before changing deadlines or cleanup behavior.
+shell execution, cleanup or EOF delay. **The failure was not reproduced in the
+local checks and its cause remains unverified**, not proven flaky or fixed.
+No hosted job was manually rerun.
+
+In-memory command timeouts now append lifecycle diagnostics without changing
+the deadline, polling order or cleanup policy:
+
+- `phase`: `before-first-poll`, `waiting-for-child-exit`,
+  `cleanup-crossed-deadline`, or `waiting-for-pipe-eof`.
+- `elapsed_ms` / `timeout_ms`, observed child-exit and cleanup-completion times
+  relative to the same post-spawn timer, and the observed child exit code.
+- `stdout_eof` / `stderr_eof`: the last pipe observations (`None` before polling).
+
+These describe observations before timeout-triggered Drop cleanup, not proof
+that an unobserved child is still running, successful descendant cleanup, or a
+root cause. EOF observations can precede group cleanup in the last iteration.
+The added fields contain no captured output, command arguments, environment,
+or process IDs; the existing program-name error prefix is retained. A cleanup
+that never returns cannot produce a later polling-loop diagnostic. Use the next
+hosted failure's observations before changing deadlines or cleanup behavior.
 
 ## Focused test map
 

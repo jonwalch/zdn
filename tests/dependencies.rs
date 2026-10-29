@@ -409,7 +409,11 @@ fn memory_capture_kills_inherited_helpers_on_timeout_and_normal_exit() {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(started_marker.exists(), "helper must have started");
         if wait_for_helper {
-            assert!(result.unwrap_err().to_string().contains("time limit"));
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("time limit"));
+            assert!(error.contains("phase=waiting-for-child-exit"), "{error}");
+            assert!(error.contains("child_exit_observed_at_ms=None"), "{error}");
+            assert!(error.contains("cleanup_completed_at_ms=None"), "{error}");
         } else {
             assert!(result.unwrap().success);
         }
@@ -429,16 +433,27 @@ fn memory_capture_detached_child_fixture() {
     let Some(pid_file) = std::env::var_os("ZDN_MEMORY_CAPTURE_PID_FILE") else {
         return;
     };
+    let held_pipe = std::env::var("ZDN_MEMORY_CAPTURE_HELD_PIPE").unwrap();
+    println!("fixture-stdout-secret");
+    eprintln!("fixture-stderr-secret");
     let mut helper = Command::new("/bin/sh");
     helper
         .args(["-c", "sleep 10"])
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(if held_pipe == "stdout" {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
+        .stderr(if held_pipe == "stderr" {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
         .process_group(0);
     let child = helper.spawn().unwrap();
     fs::write(pid_file, child.id().to_string()).unwrap();
     // This fixture intentionally leaves a helper in another process group with
-    // both pipes open. The parent test owns and kills this detached helper.
+    // one pipe open. The parent test owns and kills this detached helper.
 }
 
 #[cfg(unix)]
@@ -453,23 +468,43 @@ fn memory_capture_deadline_includes_eof_from_a_detached_helper() {
             }
         }
     }
-    let temp = tempfile::tempdir().unwrap();
-    let cleanup = DetachedCleanup(temp.path().join("pid"));
-    let mut command = Command::new(std::env::current_exe().unwrap());
-    command
-        .args([
-            "--exact",
-            "memory_capture_detached_child_fixture",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env("ZDN_MEMORY_CAPTURE_PID_FILE", &cleanup.0);
-    let started = Instant::now();
-    let error = zdn::dependencies::run_command_in_memory(&mut command, Duration::from_millis(250))
-        .unwrap_err();
-    assert!(cleanup.0.exists(), "detached helper must have started");
-    assert!(error.to_string().contains("time limit"));
-    assert!(started.elapsed() < Duration::from_secs(2));
+    for held_pipe in ["stdout", "stderr"] {
+        let temp = tempfile::tempdir().unwrap();
+        let cleanup = DetachedCleanup(temp.path().join("pid"));
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "memory_capture_detached_child_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("ZDN_MEMORY_CAPTURE_PID_FILE", &cleanup.0)
+            .env("ZDN_MEMORY_CAPTURE_HELD_PIPE", held_pipe)
+            .env("ZDN_DIAGNOSTIC_SECRET", "fixture-environment-secret");
+        let started = Instant::now();
+        let error =
+            zdn::dependencies::run_command_in_memory(&mut command, Duration::from_millis(250))
+                .unwrap_err();
+        assert!(cleanup.0.exists(), "detached helper must have started");
+        let error = format!("{error:#}");
+        assert!(error.contains("time limit"));
+        assert!(error.contains("phase=waiting-for-pipe-eof"), "{error}");
+        assert!(error.contains("child_exit_code=Some(0)"), "{error}");
+        assert!(error.contains("child_exit_observed_at_ms=Some("), "{error}");
+        assert!(error.contains("cleanup_completed_at_ms=Some("), "{error}");
+        for pipe in ["stdout", "stderr"] {
+            assert!(
+                error.contains(&format!("{pipe}_eof=Some({})", pipe != held_pipe)),
+                "{error}"
+            );
+        }
+        assert!(!error.contains("fixture-stdout-secret"));
+        assert!(!error.contains("fixture-stderr-secret"));
+        assert!(!error.contains("fixture-environment-secret"));
+        assert!(!error.contains(cleanup.0.to_str().unwrap()));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 }
 
 #[test]
