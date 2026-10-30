@@ -19,13 +19,22 @@ See [permission limits](docs/aws-state.md#permissions-and-recovery).
 ## Start here
 
 **Install from source (free):** use the [manual or source-building Homebrew path](docs/install-source.md)
-for the controller and optional separate Ironwood wallet. No Apple signing
+for the controller and optional separate Ironwood wallet on macOS or Linux.
+Preview 4 has no Mac executables. No Apple signing
 credentials are required. Source builds do not qualify the browser downloads.
 
-**First network:** follow the [Preview 3 first-network walkthrough](docs/preview-start.md)
+**First network:** follow the [Preview 4 first-network walkthrough](docs/preview-start.md)
 for verified node inputs, AWS setup, optional payments and cleanup. It continues
-from source installation on Mac or Linux, or verified Linux downloads. Follow
+from source installation on Mac or Linux, or verified Linux `manage-linux-x86_64` /
+`pay-linux-x86_64` downloads. Follow
 that walkthrough in order; the quick start below is a summary, not extra steps.
+
+The [bounded transparent-payment AWS results](docs/transparent-payments-validation.md)
+apply to the exact tested candidate, not automatically to newly rebuilt/path-remapped
+Preview 4 binaries. The [dated Preview 3 native journey](docs/preview.md#verified-native-journey-2026-10-28)
+remains historical. The controller's Linux-only adapter `describe` prerequisite
+is a library boundary with no CLI/lifecycle caller; `compile`/`render` refuse
+before execution. Full TPQ integration is not implemented or qualified.
 
 **Using an agent:** start with [agent operating instructions](docs/automation.md#agent-operating-checklist).
 Use the installed CLI's command schema, preserve operation IDs and receipts,

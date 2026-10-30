@@ -27,15 +27,18 @@ require a wallet download. Vizor and Zodl have not been qualified with ZDN.
 
 ## Platform and trust limits
 
-- **Linux x86-64:** executable checks cover GLIBC requirements through 2.34 and
-  the specific one-node workflow identified in the release notes. This is not
+- **Linux x86-64:** use Preview 4's `manage-linux-x86_64` or `pay-linux-x86_64`
+  profile. GLIBC requirements are through 2.34; live evidence is scoped to the
+  exact candidate hashes in the qualification reports, not new release builds. This is not
   universal Linux distribution or clean-machine support.
 - **Apple Silicon Mac:** [build locally from source](install-source.md), manually
-  or with the publisher Homebrew tap. Preview 3 distributes no Mac executables or
+  or with the publisher Homebrew tap. Preview 4 distributes no Mac executables or
   Mac executable-download profiles. Earlier Preview 2 browser downloads failed
   Gatekeeper assessment and were withdrawn, not made usable by changing security
-  settings. Native source installation/offline checks pass on macOS 27.0.1;
-  candidate-specific AWS/payment coverage is recorded in the release notes.
+  settings. Exact Preview 4 native source builds and ordinary checks passed;
+  see [current source-build scope](install-source.md#preview-4-source-build-checks-2026-10-30).
+  Earlier Preview 2/3 installation/Homebrew results remain historical;
+  candidate-specific AWS/payment coverage is recorded below and in the release notes.
   No Intel Mac, clean-machine or universal macOS support is claimed. Never remove
   quarantine, re-sign downloaded files or bypass Gatekeeper to proceed.
 - **Unsigned distribution:** checksums identify bytes, not publisher identity,
@@ -48,7 +51,24 @@ Keys and complete wallet stores remain local and contain plaintext secrets.
 Normal scheduled mining and reward maturity are required for payments; an open
 RPC port or capability response is not a payment test.
 
+## Bounded transparent-payment evidence (2026-10-30)
+
+The [public transparent-payment summary](transparent-payments-validation.md)
+records six confirmed payments, accepted-reply-loss recovery, node restart,
+complete-store restore and independently audited cleanup on one approved AWS
+candidate. It pins the tested controller/backend hashes. Preview 4's rebuilt,
+path-remapped Linux executables have their own hashes; they do **not** inherit
+the exact tested artifacts' live qualification. Fresh release-binary cloud reruns
+and broader platform/recovery matrices remain separate gates.
+
+The new controller adapter `describe` boundary is a Linux-only prerequisite,
+not a deployment or payment path. It has no CLI/lifecycle caller; `compile` and
+`render` refuse before execution. Full TPQ integration is not implemented or
+qualified. Ordinary transparent payments do not use this boundary.
+
 ## Verified native journey (2026-10-28)
+
+**Historical Preview 3 evidence, not Preview 4 qualification.**
 
 The exact Preview 3 source-installed Apple Silicon controller, separately pinned
 Linux helper and existing source-built Ironwood wallet completed one source build,
@@ -67,23 +87,32 @@ unchanged; no private operational evidence or wallet data is distributed.
 
 ## Source identities and notices
 
-Preview 3 controller/helper and source installation use product revision
-`fe2ccf325b57f8538973c31bcf26322a416eae55`. The product-source archive identifies
+Preview 4 controller/helper and source installation use product revision
+`3c136fbfd2e50bac43d889b53ea0ef341ef40848`. The product-source archive
+`zdn-product-source-3c136fb.tar.gz` (SHA-256
+`efe868012fed69fa27814f9dcfe18ee536d9bd075044ba23a2bd3482559a4347`) identifies
 that exact build; maintained repository documentation can be newer. The internal
 `0.1.0` version alone is not a binary pin. Use the exact hashes and source
 identities in `distribution.json` and the release notes.
 
-The standalone wallet remains source `70ccc7f45ef9ecdea46151719b82b356b48e2d76`
-(Common 3.0.0). Its source, Linux executable and original wallet-notices download
-are republished unchanged; local Mac builds have their own executable hashes.
-The new controller-notices wrapper records applicability to the unchanged
-manifests/lockfile and target dependency closures, retaining original supplements
-and attribution without transferring their historical live claims.
+The standalone wallet is source `190661784574e13925f99f8bd1c77491db9fa9b5`
+(Common 3.0.0), supplied as `ironwood-wallet-source-preview.4.tar.gz` (SHA-256
+`c4f5dc330b81d43943f6d0b2526e8c0a4d7e4fe2ac2d7422dfc63e20762faf62`).
+This is new source and a new Linux executable, not an unchanged Preview 2/3
+republication; local Mac builds have their own executable hashes. The
+`zdn-required-notices-preview.4.tar.gz` and
+`ironwood-wallet-required-notices-preview.4.tar.gz` wrappers record current
+applicability, retaining original supplements and attribution without
+transferring their historical live claims. Exact notice checksums are in
+[source installation](install-source.md#choose-your-source-and-trust-boundary).
 
 The public node-source archive has its own Git identity and a source map of
-included files, modes and hashes. Its historical research origin is revision
-`f39268e2caa87acf3b78c228d4a41a0b95a35a1a`; the distributed projection is not
-that commit. Public corresponding sources are supplied as release assets;
+included files, modes and hashes. `zdn-node-source-c561d1af-public.tar.gz` has
+projection revision `c561d1af5d3129f8cd2fc0a77beab03b4fd9573a`; its historical
+research origin is `661d32c4b6fb7bce7a20c0ab46ce48901356b313`, not that projection
+commit. The exact archive and `zdn-node-source-map.json` hashes are in the
+[first-network guide](preview-start.md#source-installed-controller).
+Public corresponding sources are supplied as release assets;
 access to private development history is not an installation prerequisite.
 Source changes do not inherit prior live qualification.
 

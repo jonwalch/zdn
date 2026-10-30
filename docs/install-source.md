@@ -4,6 +4,8 @@ Build ZDN locally on macOS or Linux without an Apple Developer account, signing
 certificate, notarization credentials or paid installer. Homebrew is an optional
 build/install manager, not a requirement. Compilation needs Internet access for
 Rust registry dependencies unless you already have a complete Cargo cache.
+Linux x86-64 users can alternatively use the verified `manage-linux-x86_64` or
+`pay-linux-x86_64` [release profile](preview-start.md#1-select-and-verify-a-profile).
 
 This installs **two separate programs**:
 
@@ -17,7 +19,7 @@ or makes payments. AWS operation still costs money. Experimental custom Testnet
 only: no real funds, Mainnet or production AWS account. Wallet files/backups are
 plaintext secrets. Installing a backend does not register or authorize it.
 
-**Preview 3 provides no macOS executable download.** Build locally from reviewed
+**Preview 4 provides no macOS executable download.** Build locally from reviewed
 source. Preview 2 browser downloads failed Gatekeeper because they were not
 Developer ID signed/notarized; they are not the current installation path. Do
 not strip quarantine, override Gatekeeper, re-sign downloaded files or change
@@ -29,20 +31,22 @@ investigate; these instructions do not authorize a bypass. The paid publisher
 
 The canonical public repository is <https://github.com/jonwalch/zdn>. No private
 checkout or history is needed. The formulae in its `Formula/` directory pin the
-Preview 3 release inputs, **not** moving `main` or a private Git URL. These
-instructions require the `v0.1.0-preview.3` assets to be published first:
+Preview 4 release inputs, **not** moving `main` or a private Git URL. These
+instructions require the `v0.1.0-preview.4` assets to be published first:
 
 | Component | Archive / original revision | SHA-256 |
 | --- | --- | --- |
-| Controller | `zdn-product-source-fe2ccf3.tar.gz` / `fe2ccf325b57f8538973c31bcf26322a416eae55` | `5e7c167e690d42b1f16d46716cf6351e7a8d3a9cdbce59b3746ac5c98c272737` |
-| Wallet | `ironwood-wallet-source-70ccc7f.tar.gz` / `70ccc7f45ef9ecdea46151719b82b356b48e2d76` | `5fadd8187145d577d98a265dd50279483390e67b6617e50b1cabbb097d30a4d2` |
+| Controller | `zdn-product-source-3c136fb.tar.gz` / `3c136fbfd2e50bac43d889b53ea0ef341ef40848` | `efe868012fed69fa27814f9dcfe18ee536d9bd075044ba23a2bd3482559a4347` |
+| Wallet | `ironwood-wallet-source-preview.4.tar.gz` / `190661784574e13925f99f8bd1c77491db9fa9b5` | `c4f5dc330b81d43943f6d0b2526e8c0a4d7e4fe2ac2d7422dfc63e20762faf62` |
 
-The wallet source and `ironwood-wallet-required-notices-preview.2.tar.gz` are
-republished unchanged under Preview 3, including their original names and hashes.
-The controller's `zdn-required-notices-preview.3.tar.gz` wraps the original
-supplements unchanged; its `APPLICABILITY.json` rebinds the dependency closures
-to the Preview 3 inputs. This establishes notice applicability, not executable
-equivalence or live-network qualification.
+Keep `zdn-required-notices-preview.4.tar.gz` (SHA-256
+`d39883fb1b4a6a84c4a128541dddcb63f3cdf861d04fbf3772c88a15a7f07b3d`)
+and `ironwood-wallet-required-notices-preview.4.tar.gz` (SHA-256
+`bcb80e704aac614e4526807dff344aa56199aebffdd941e8312c3dd5e3fd4fa6`)
+with the corresponding sources. These notice wrappers retain historical
+supplements and record current applicability, not executable equivalence or
+live-network qualification. Preview 4 wallet source is new, not the unchanged
+Preview 2/3 wallet archive.
 
 Verify these pins through a channel you trust before building. Checksums detect
 changed bytes, not publisher identity, safety or legal clearance. Cargo builds
@@ -153,12 +157,12 @@ cd zdn-source-install
 rustup toolchain install 1.97.1 --profile minimal
 rustc +1.97.1 --version
 cargo +1.97.1 --version
-BASE=https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.3
-curl --fail --location --output zdn-product-source-fe2ccf3.tar.gz "$BASE/zdn-product-source-fe2ccf3.tar.gz"
-curl --fail --location --output zdn-required-notices-preview.3.tar.gz "$BASE/zdn-required-notices-preview.3.tar.gz"
+BASE=https://github.com/jonwalch/zdn/releases/download/v0.1.0-preview.4
+curl --fail --location --output zdn-product-source-3c136fb.tar.gz "$BASE/zdn-product-source-3c136fb.tar.gz"
+curl --fail --location --output zdn-required-notices-preview.4.tar.gz "$BASE/zdn-required-notices-preview.4.tar.gz"
 printf '%s\n' \
-  '5e7c167e690d42b1f16d46716cf6351e7a8d3a9cdbce59b3746ac5c98c272737  zdn-product-source-fe2ccf3.tar.gz' \
-  '00a1b43dd005ac6c73d5f5c65c531845d448d9d17aaa8416a5758235ea5c89fd  zdn-required-notices-preview.3.tar.gz' > controller.SHA256SUMS
+  'efe868012fed69fa27814f9dcfe18ee536d9bd075044ba23a2bd3482559a4347  zdn-product-source-3c136fb.tar.gz' \
+  'd39883fb1b4a6a84c4a128541dddcb63f3cdf861d04fbf3772c88a15a7f07b3d  zdn-required-notices-preview.4.tar.gz' > controller.SHA256SUMS
 case "$(uname -s)" in
   Darwin) shasum -a 256 -c controller.SHA256SUMS ;;
   Linux) sha256sum -c controller.SHA256SUMS ;;
@@ -166,8 +170,8 @@ case "$(uname -s)" in
 esac
 mkdir controller controller-notices
 # Controller archive has files at its root: do NOT --strip-components=1.
-tar -xzf zdn-product-source-fe2ccf3.tar.gz -C controller
-tar -xzf zdn-required-notices-preview.3.tar.gz -C controller-notices
+tar -xzf zdn-product-source-3c136fb.tar.gz -C controller
+tar -xzf zdn-required-notices-preview.4.tar.gz -C controller-notices
 PREFIX="$HOME/.local"
 cargo +1.97.1 install --locked --path controller --root "$PREFIX" --bin zdn
 ZDN="$PREFIX/bin/zdn"
@@ -181,25 +185,26 @@ with your installation records. Add the PATH setting to your own shell profile
 if desired. A current public Git checkout can instead be built with
 `cargo +1.97.1 install --locked --path . --root "$PREFIX" --bin zdn`; record
 `git rev-parse HEAD` and `git status --short`. That builds the checkout, not
-necessarily the Preview 3 pin. Never copy private history into a public checkout.
+necessarily the Preview 4 pin. Never copy private history into a public checkout.
 
 For optional CLI payments, continue in the same source-install directory:
 
 ```sh
-curl --fail --location --output ironwood-wallet-source-70ccc7f.tar.gz "$BASE/ironwood-wallet-source-70ccc7f.tar.gz"
-curl --fail --location --output ironwood-wallet-required-notices-preview.2.tar.gz "$BASE/ironwood-wallet-required-notices-preview.2.tar.gz"
+curl --fail --location --output ironwood-wallet-source-preview.4.tar.gz "$BASE/ironwood-wallet-source-preview.4.tar.gz"
+curl --fail --location --output ironwood-wallet-required-notices-preview.4.tar.gz "$BASE/ironwood-wallet-required-notices-preview.4.tar.gz"
 printf '%s\n' \
-  '5fadd8187145d577d98a265dd50279483390e67b6617e50b1cabbb097d30a4d2  ironwood-wallet-source-70ccc7f.tar.gz' \
-  'e195ddedd8928b40c6748370dafa0c03df045b46fa51e8630813aac67fe3650b  ironwood-wallet-required-notices-preview.2.tar.gz' > wallet.SHA256SUMS
+  'c4f5dc330b81d43943f6d0b2526e8c0a4d7e4fe2ac2d7422dfc63e20762faf62  ironwood-wallet-source-preview.4.tar.gz' \
+  'bcb80e704aac614e4526807dff344aa56199aebffdd941e8312c3dd5e3fd4fa6  ironwood-wallet-required-notices-preview.4.tar.gz' > wallet.SHA256SUMS
 case "$(uname -s)" in
   Darwin) shasum -a 256 -c wallet.SHA256SUMS ;;
   Linux) sha256sum -c wallet.SHA256SUMS ;;
+  *) echo 'This guide covers macOS and Linux' >&2; exit 1 ;;
 esac
 mkdir wallet wallet-notices
-tar -xzf ironwood-wallet-source-70ccc7f.tar.gz -C wallet
-tar -xzf ironwood-wallet-required-notices-preview.2.tar.gz -C wallet-notices
-# Wallet archive has a wrapper directory and a standalone nested workspace.
-WALLET_SOURCE=wallet/ironwood-wallet-source-70ccc7f
+tar -xzf ironwood-wallet-source-preview.4.tar.gz -C wallet
+tar -xzf ironwood-wallet-required-notices-preview.4.tar.gz -C wallet-notices
+# Preview 4 archive has files at its root, with no wrapper directory.
+WALLET_SOURCE=wallet
 cargo +1.97.1 install --locked \
   --path "$WALLET_SOURCE/experiments/ironwood-wallet" --root "$PREFIX" --bin ironwood-wallet
 IW="$(cd "$PREFIX/bin" && pwd -P)/ironwood-wallet"
@@ -211,7 +216,7 @@ to the release is made. Keep the original wallet README and provenance; historic
 research repository names are attribution, not dependencies or access requirements.
 Historical binary/toolchain provenance in the original notices supplements
 describes Preview 2, not the hashes or compiler of your new local build. The
-controller wrapper's `APPLICABILITY.json` records the Preview 3 dependency-closure
+controller wrapper's `APPLICABILITY.json` records the Preview 4 dependency-closure
 applicability; it does not turn historical binary evidence into new build evidence.
 
 ## Verify installation and explicitly select the wallet
@@ -246,6 +251,8 @@ esac
 
 Require wallet `schema_version` 1 and capabilities `ironwood-wallet-state/v2`,
 `ironwood-wallet-state-observation/v2`, `ironwood-wallet-snapshot-payment/v2`.
+For transparent payments also require `transparent-wallet-payments/v1` and
+`transparent-wallet-state-observation/v1`; older backends refuse without fallback.
 The crate version alone does not identify either build. The locally computed
 hash identifies **your reviewed local build**, not an arbitrary trusted download.
 
@@ -278,13 +285,41 @@ the ordinary suite's generated-build fixture needs modern Bash ahead of Apple's
 Bash 3.2 and GNU coreutils on PATH. Those are test prerequisites, not a reason
 to run node builds or proof-producing examples during installation.
 
+### Preview 4 source-build checks (2026-10-30)
+
+The exact controller source pin above passed native Apple Silicon locked/offline
+release build, formatting, all-target Clippy with denied warnings and the full
+ordinary suite: **1,251 passed, 0 failed, 1 ignored**. The wallet source archive's
+35 files/modes independently reconstructed its declared Git tree. Its native
+release build, formatting, Clippy and selected proof-free suite passed:
+**33 passed, 0 failed, 2 proof tests ignored, 3 capacity/history tests skipped**.
+Native capabilities/help/refusal controls and Ruby syntax for both formulae passed.
+No Homebrew installation, tap upgrade, signing/notarization, browser-download,
+node build, proof generation or cloud run was performed for these native checks.
+These are current source-build checks, not inherited historical installation
+or new-binary live qualification. See [release check details](transparent-payments-validation.md#preview-4-release-checks).
+
 ### Checked installation scope (2026-10-28)
+
+**Historical Preview 2/3 inputs only, not Preview 4 qualification.** The updated
+Preview 4 formulae and source pins have not inherited these Homebrew, native
+installation or cloud results. Check the new builds separately; see the
+[bounded transparent-payment evidence](transparent-payments-validation.md)
+for the exact later AWS candidate and its release-binary qualification boundary.
 
 The exact Preview 3 controller source archive installed successfully on native
 Apple Silicon macOS 27.0.1 with `cargo +1.97.1 install --locked`. Every source
 file and executable mode matched the pinned public Git tree. The Linux locked
 release build, executable schema/capabilities, source capture and chain-byte
 checks also passed.
+
+Those Preview 3 checks used `zdn-product-source-fe2ccf3.tar.gz`, revision
+`fe2ccf325b57f8538973c31bcf26322a416eae55`, SHA-256
+`5e7c167e690d42b1f16d46716cf6351e7a8d3a9cdbce59b3746ac5c98c272737`;
+the existing wallet was `ironwood-wallet-source-70ccc7f.tar.gz`, revision
+`70ccc7f45ef9ecdea46151719b82b356b48e2d76`, SHA-256
+`5fadd8187145d577d98a265dd50279483390e67b6617e50b1cabbb097d30a4d2`.
+These are historical identities, not alternative current installation pins.
 
 The subsequent [bounded native journey](preview.md#verified-native-journey-2026-10-28)
 used that same source-installed controller and the existing pinned source-built
@@ -294,7 +329,8 @@ This execution evidence is separate from installation checks and does not imply
 full beta, general Mac support or browser-download qualification.
 
 The earlier checks below cover Preview 2 installation inputs, not the updated
-controller/formula versions. Wallet source, lockfile and notice bytes are unchanged:
+Preview 4 controller/wallet/formula versions. The wallet source, lockfile and
+notice bytes were unchanged between Preview 2 and Preview 3, not Preview 4:
 
 - Linux x86-64: both pinned archives installed with Rust/Cargo 1.97.1 and
   `cargo install --locked`. Installed schema/capabilities, backend registration,
@@ -308,7 +344,8 @@ controller/formula versions. Wallet source, lockfile and notice bytes are unchan
 
 These were existing developer machines/environments, not clean-machine,
 Homebrew-on-Linux, Intel Mac, live payment or browser-download qualification.
-No cloud, node build, proof generation or performance workload was run.
+No cloud, node build, proof generation or performance workload was run as part
+of those earlier installation checks.
 Public tap fetching still depends on these formulae being published to public
 `main`; local-tap testing does not publish them or modify any existing release.
 

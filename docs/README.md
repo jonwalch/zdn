@@ -22,6 +22,7 @@ Mac browser-download installation is blocked; see [current limits](preview.md).
 | Launch, inspect or resume a network | [Deployment](private-devnet.md) |
 | Connect an application or grant participant access | [Connections](connections.md) |
 | Fund, send, back up and recover CLI payments | [Wallet](wallet.md) |
+| Review the bounded transparent-payment AWS results | [Qualification and remaining limits](transparent-payments-validation.md) |
 | Change a node image safely | [Updates](updates.md) |
 | Remove participant grants, networks and teams | [Removal](removal.md) |
 | Use optional lightwalletd | [Light-wallet setup](lightwallet.md), [client compatibility](compatibility.md) |

@@ -11,8 +11,8 @@ wallet compatibility.
   starting with the platform and wallet-program prerequisites. It covers local
   wallet creation, reward maturity, payment confirmation and cleanup.
 - **Use transparent payments:** see [transparent sending and receiving](#transparent-sending-and-receiving).
-  This requires a matching new backend; existing released wallet binaries may
-  not advertise the required capabilities.
+  This requires the matching Preview 4 backend; older released wallet binaries
+  do not imply the required capabilities or live qualification.
 - **Resume an interrupted payment:** keep the store and original operation ID;
   follow [interruption recovery](#if-interrupted-when-finished). Do not pay again
   with a new operation ID.
@@ -38,9 +38,9 @@ archive. The wallet program is not sandboxed; only run bytes you trust.
 
 ### 1. Obtain the matching wallet program
 
-**Preview 3 on Mac: install the controller and wallet from source** using the
+**Preview 4 on Mac: install the controller and wallet from source** using the
 [free manual or source-building Homebrew path](install-source.md), then continue
-below with your physical wallet path and its reviewed local-build hash. Preview 3
+below with your physical wallet path and its reviewed local-build hash. Preview 4
 does not provide Mac executable downloads.
 
 The withdrawn Preview 2 Mac downloads were rejected by Gatekeeper on arm64
@@ -50,7 +50,7 @@ protections. If a locally built program is blocked, stop and investigate.
 Source installation does not qualify those historical browser binaries.
 
 Network-management downloads do not by themselves include a usable wallet.
-Select the payment profile in the [public preview release](https://github.com/jonwalch/zdn/releases)
+Select `pay-linux-x86_64` in the [Preview 4 release](https://github.com/jonwalch/zdn/releases/tag/v0.1.0-preview.4)
 for the separate wallet executable, matching source and required notices, or
 build its exact supplied source. The management-only profile does not require
 these optional files. Do not use an arbitrary executable called `ironwood-wallet`.
@@ -59,14 +59,20 @@ The public release supplies standalone corresponding wallet source, originally
 developed in `jonwalch/zcash-transparent-pq` as `experiments/ironwood-wallet`.
 No access to that repository is required. Its crate version is `0.1.0`, which
 is **not a sufficient version pin**; it has no `--version` interface. Reference
-source revision is `70ccc7f45ef9ecdea46151719b82b356b48e2d76`.
+standalone source revision is `190661784574e13925f99f8bd1c77491db9fa9b5`,
+in `ironwood-wallet-source-preview.4.tar.gz` (SHA-256
+`c4f5dc330b81d43943f6d0b2526e8c0a4d7e4fe2ac2d7422dfc63e20762faf62`).
+The Linux executable `ironwood-wallet-0.1.0-preview.4-linux-x86_64` has SHA-256
+`8fecc258e725d38360b01a9d6b41c7534173d3d91c289f447a5b90359fb18c0b`;
+its required notices are `ironwood-wallet-required-notices-preview.4.tar.gz`
+(SHA-256 `bcb80e704aac614e4526807dff344aa56199aebffdd941e8312c3dd5e3fd4fa6`).
 Keep its README, Cargo.lock and upstream MIT/Apache-2.0 attribution.
 Its exact `zakura-*` dependencies are Common 3.0.0 (authoritative
 Common source `0b13ab9e66ea8855a7b4305b17e44fdccbeb3d58`), not arbitrary newer
 wallet libraries. This source reference is not a publisher-signed binary release.
 
 For a reviewed source build, follow [source installation](install-source.md) for
-the exact archive checksum, wrapper/subtree extraction layout, Rust/Cargo 1.97.1
+the exact archive checksum, root/subtree extraction layout, Rust/Cargo 1.97.1
 manual commands and the source-building Homebrew alternative. Native C/linker
 tools compile bundled SQLite. Homebrew backend selection must use the physical
 versioned Cellar executable, not its `bin` or `opt` symlink.
@@ -88,7 +94,9 @@ capability response:
 
 Require schema 1 and `ironwood-wallet-state/v2`,
 `ironwood-wallet-state-observation/v2`, and
-`ironwood-wallet-snapshot-payment/v2`. These capabilities and an executable hash
+`ironwood-wallet-snapshot-payment/v2`. Transparent payments additionally require
+`transparent-wallet-payments/v1`; transparent balances require
+`transparent-wallet-state-observation/v1`. These capabilities and an executable hash
 are interface/trust inputs, not proof that payments work on a particular node.
 The matching chain uses public Testnet genesis
 `05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38`,
@@ -273,15 +281,21 @@ not your local keys or backups; a failed cleanup is not success.
 
 ## Transparent sending and receiving
 
-**Local implementation; live-node acceptance and updated distribution remain
-unqualified.** Ironwood stays the default. Transparent mode uses the same
+**Preview 4 distribution; bounded AWS evidence is candidate-specific.** The
+[transparent-payment qualification summary](transparent-payments-validation.md)
+records the exact tested controller/backend, six confirmed payments,
+accepted-reply-loss recovery, node restart and coherent-store restore. Newly
+rebuilt/path-remapped Preview 4 release binaries have different hashes and do
+not inherit that candidate's live qualification. P2SH live spending, reorgs,
+multiple nodes and broader recovery remain unqualified. Ironwood stays the default.
+Transparent mode uses the same
 network-scoped wallets, private connection, input reservations, operation IDs
 and original-transaction recovery. It adds no crypto dependency to ZDN itself.
 The separately selected backend must advertise `transparent-wallet-payments/v1`
 and snapshot-payment/v2; transparent balances also require
 `transparent-wallet-state-observation/v1`. Older backends fail closed rather
-than silently sending from another pool. The older release/source pins above
-do not imply transparent support; use an explicitly reviewed matching backend.
+than silently sending from another pool. Use the explicitly reviewed matching
+Preview 4 backend above, not an older same-name executable.
 
 For receiving, verify the local wallet with:
 
@@ -1065,8 +1079,11 @@ resumable state/v2 with explicitly enabled checkpoint recovery. There is no
 independent consensus verification or automatic deep reset. These are deliberate bounded prototype limits,
 not a production wallet or atomic/current availability guarantee.
 
-The selected release's [bounded Linux payment results](preview-start.md#4-launch-wait-fund-and-send)
-do not qualify other component bytes, Mac live use or general recovery behavior.
-Those cases still require separate integrated AWS/live qualification.
+The historical [bounded Linux payment results](preview-start.md#4-launch-wait-fund-and-send)
+and [Preview 3 native journey](preview.md#verified-native-journey-2026-10-28)
+do not qualify new Preview 4 component bytes or general recovery behavior.
+The later [transparent-payment results](transparent-payments-validation.md)
+likewise apply only to their exact AWS candidate, not remapped release builds
+or Mac live use. Those cases still require separate integrated AWS/live qualification.
 Offline CLI tests use local fake AWS/RPC/backend processes and
 require neither credentials nor proofs; genuine-proof backend controls are separate.
