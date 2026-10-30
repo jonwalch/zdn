@@ -19,7 +19,8 @@ use serde::Deserialize;
 use super::evidence;
 use crate::host::{
     command::{Executor, HostCommand, Output},
-    HostInstallSpec, DATA_ROOT,
+    volume::VolumeSpec,
+    DATA_ROOT,
 };
 
 /// Caller-selected absolute executable paths. Activation must resolve these in
@@ -57,7 +58,7 @@ pub struct Observation {
     tracing::instrument(skip_all, name = "host.volume.probe.observe")
 )]
 pub fn observe(
-    spec: &HostInstallSpec,
+    spec: &impl VolumeSpec,
     tools: &Tools,
     executor: &mut Executor,
     cancelled: &AtomicBool,
@@ -77,14 +78,14 @@ pub fn observe(
 /// report logical mount targets and must observe this same caller-owned tree.
 /// Production callers use `/`; this is not a namespace or fabricated authority.
 pub(in crate::host) fn observe_at(
-    spec: &HostInstallSpec,
+    spec: &impl VolumeSpec,
     root: &Path,
     tools: &Tools,
     executor: &mut Executor,
     cancelled: &AtomicBool,
     producer_namespace: bool,
 ) -> Result<Observation> {
-    spec.validate()?;
+    spec.validate_volume()?;
     ensure!(root.is_absolute(), "filesystem root must be absolute");
     let inventory = {
         #[cfg(feature = "profiling")]
@@ -201,7 +202,7 @@ pub(in crate::host) fn observe_at(
                 )?
             };
             let size_bytes = parse_size(&size.stdout)?;
-            if let Some(authorization) = &spec.new_volume {
+            if let Some(authorization) = spec.new_volume() {
                 ensure!(
                     authorization.size_bytes == size_bytes,
                     "new-volume authorization does not match the observed disk size"

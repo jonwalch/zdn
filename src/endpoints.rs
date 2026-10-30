@@ -26,6 +26,7 @@ use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 pub const API_VERSION: &str = "zdn-endpoints/v1alpha1";
+pub const EXTERNAL_API_VERSION: &str = "zdn-external-endpoints/v1";
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 /// This is the restricted client gateway, not Zakura's administrative RPC.
 pub const NODE_RPC_PORT: u16 = 18234;
@@ -114,6 +115,23 @@ pub struct EndpointFile {
     pub consensus_fingerprint: String,
     pub node_count: u8,
     pub targets: Vec<EndpointTarget>,
+    /// Explicit external-only runtime binding; ordinary serialized bytes omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<ExternalAccess>,
+}
+
+/// Reviewed public routing identity, not credentials or execution authority.
+/// Live admission must match service_sha256 before selecting its finite class.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExternalAccess {
+    pub request_sha256: String,
+    pub package_sha256: String,
+    pub compiled_sha256: String,
+    pub native_inventory_sha256: String,
+    pub host_manifest_sha256: String,
+    pub service_sha256: String,
+    pub body_class: crate::rpc_limits::BodyClass,
 }
 
 impl EndpointFile {
@@ -167,6 +185,7 @@ impl EndpointFile {
             consensus_fingerprint: cluster.manifest.fingerprint()?,
             node_count: cluster.node_count,
             targets,
+            external: None,
         };
         file.validate()?;
         Ok(file)
@@ -178,10 +197,34 @@ impl EndpointFile {
     )]
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.api_version == API_VERSION,
+            (self.api_version == API_VERSION && self.external.is_none())
+                || (self.api_version == EXTERNAL_API_VERSION && self.external.is_some()),
             "unsupported endpoint file version"
         );
         validate_scope(&self.scope, self.bootstrap_id, self.network_id)?;
+        if let Some(external) = &self.external {
+            for hash in [
+                &external.request_sha256,
+                &external.package_sha256,
+                &external.compiled_sha256,
+                &external.native_inventory_sha256,
+                &external.host_manifest_sha256,
+                &external.service_sha256,
+            ] {
+                ensure!(
+                    hash.len() == 64
+                        && hash
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                    "invalid external endpoint binding"
+                );
+            }
+            ensure!(
+                external.body_class == crate::rpc_limits::BodyClass::LargeHexV1
+                    && self.targets.len() == 1,
+                "unsupported external participant transport or services"
+            );
+        }
         ensure!(
             self.consensus_fingerprint.len() == 64
                 && self
@@ -223,6 +266,76 @@ impl EndpointFile {
             );
         }
         Ok(())
+    }
+
+    /// Only select after validate_gateway_observation succeeded on this session.
+    pub fn body_class(&self) -> crate::rpc_limits::BodyClass {
+        self.external
+            .as_ref()
+            .map_or(crate::rpc_limits::BodyClass::Default, |e| e.body_class)
+    }
+
+    pub fn validate_gateway_observation(&self, value: &Value) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            value["apiVersion"] == crate::client_gateway::OBSERVATION_API_VERSION
+                && value["deploymentId"] == self.network_id.to_string()
+                && value["nodeId"] == PRODUCER_NODE_ID
+                && value["consensusFingerprint"] == self.consensus_fingerprint
+                && value["status"] == "ready",
+            "participant gateway identity differs"
+        );
+        if let Some(external) = &self.external {
+            ensure!(
+                value["serviceSha256"] == external.service_sha256,
+                "external gateway runtime binding differs"
+            );
+        }
+        Ok(())
+    }
+
+    /// Caller authenticates scope, bootstrap and instance from saved deployment
+    /// outputs and retains this file with its existing lifecycle evidence.
+    #[cfg(target_os = "linux")]
+    pub fn from_external(
+        scope: Scope,
+        bootstrap_id: Uuid,
+        node_count: u8,
+        instance_id: String,
+        manifest: &crate::host::external::Manifest,
+    ) -> Result<Self> {
+        manifest.validate()?;
+        ensure!(
+            manifest.options.node_id == PRODUCER_NODE_ID,
+            "participant gateway requires producer host"
+        );
+        let compiled: crate::public_chain_adapter::contract::Compiled =
+            crate::public_chain_adapter::contract::parse(manifest.compiled_json.as_bytes())?;
+        let pin = crate::public_chain_adapter::contract::Pin::of;
+        let file = Self {
+            api_version: EXTERNAL_API_VERSION.into(),
+            network_id: manifest.options.deployment_id.parse()?,
+            scope,
+            bootstrap_id,
+            consensus_fingerprint: compiled.native_fingerprint,
+            node_count,
+            targets: vec![EndpointTarget {
+                service: Service::NodeRpc,
+                node_id: PRODUCER_NODE_ID.into(),
+                instance_id,
+            }],
+            external: Some(ExternalAccess {
+                request_sha256: manifest.request.sha256.clone(),
+                package_sha256: manifest.trust.package.sha256.clone(),
+                compiled_sha256: pin(manifest.compiled_json.as_bytes()).sha256,
+                native_inventory_sha256: manifest.native_inventory.sha256.clone(),
+                host_manifest_sha256: pin(&manifest.bytes()?).sha256,
+                service_sha256: manifest.gateway_service_sha256()?,
+                body_class: crate::rpc_limits::BodyClass::LargeHexV1,
+            }),
+        };
+        file.validate()?;
+        Ok(file)
     }
 
     #[cfg_attr(

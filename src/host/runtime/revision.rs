@@ -129,11 +129,6 @@ impl Request {
             STANDARD.encode(bytes)
         ))
     }
-
-    #[cfg(target_os = "linux")]
-    fn receipt(&self) -> String {
-        format!("{}.json", self.update_id)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,23 +141,84 @@ pub enum Phase {
     Done,
 }
 
+/// Typed selection hooks for the shared forward-only persistence algorithm.
+/// Ordinary aliases preserve their historical serialization and APIs; external
+/// requests use a distinct version and namespace, not a parallel journal.
+#[cfg(target_os = "linux")]
+pub trait RevisionOriginal {
+    type Spec: crate::host::volume::VolumeSpec;
+    fn revision_bytes(&self) -> Result<Vec<u8>>;
+    fn revision_spec(&self) -> &Self::Spec;
+    fn initial_image(&self) -> &str;
+}
+#[cfg(target_os = "linux")]
+pub trait RevisionRequest: Clone + Serialize + DeserializeOwned {
+    type Original: RevisionOriginal;
+    const VERSION: &'static str;
+    const NAMESPACE: &'static str;
+    fn bytes(&self) -> Result<Vec<u8>>;
+    fn original(&self) -> &Self::Original;
+    fn update_id(&self) -> Uuid;
+    fn image(&self) -> &str;
+    fn expected(&self) -> (&str, Option<Uuid>);
+    fn receipt(&self) -> String {
+        format!("{}.json", self.update_id())
+    }
+}
+#[cfg(target_os = "linux")]
+impl RevisionOriginal for Manifest {
+    type Spec = crate::host::HostInstallSpec;
+    fn revision_bytes(&self) -> Result<Vec<u8>> {
+        self.bytes()
+    }
+    fn revision_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+    fn initial_image(&self) -> &str {
+        &self.spec.image
+    }
+}
+#[cfg(target_os = "linux")]
+impl RevisionRequest for Request {
+    type Original = Manifest;
+    const VERSION: &'static str = API_VERSION;
+    const NAMESPACE: &'static str = crate::host::runtime::revision::NAMESPACE;
+    fn bytes(&self) -> Result<Vec<u8>> {
+        self.bytes()
+    }
+    fn original(&self) -> &Manifest {
+        &self.original
+    }
+    fn update_id(&self) -> Uuid {
+        self.update_id
+    }
+    fn image(&self) -> &str {
+        &self.image.image
+    }
+    fn expected(&self) -> (&str, Option<Uuid>) {
+        (&self.expected_image, self.expected_update_id)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Transaction {
-    pub request: Request,
+pub struct GenericTransaction<R> {
+    pub request: R,
     pub phase: Phase,
 }
+pub type Transaction = GenericTransaction<Request>;
 
 /// Read-only observation, including uncertain transaction-before-receipt prefixes.
 /// A missing receipt is valid ONLY in staging, never permission to execute.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Snapshot {
+pub struct GenericSnapshot<R> {
     pub api_version: String,
-    pub active: Option<Request>,
-    pub transaction: Option<Transaction>,
+    pub active: Option<R>,
+    pub transaction: Option<GenericTransaction<R>>,
     pub producer_hold: bool,
 }
+pub type Snapshot = GenericSnapshot<Request>;
 
 fn encoded(value: &impl Serialize) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(value)?;
@@ -198,21 +254,21 @@ fn optional(directory: &Directory, name: &str, max: u64) -> Result<Option<Vec<u8
 }
 
 #[cfg(target_os = "linux")]
-fn bound(request: &Request, original: &Manifest) -> Result<()> {
+fn bound<R: RevisionRequest>(request: &R, original: &R::Original) -> Result<()> {
     ensure!(
-        request.original.bytes()? == original.bytes()?,
+        request.original().revision_bytes()? == original.revision_bytes()?,
         "native original manifest differs"
     );
-    request.validate()
+    request.bytes().map(|_| ())
 }
 
 #[cfg(target_os = "linux")]
-impl Snapshot {
+impl<R: RevisionRequest> GenericSnapshot<R> {
     /// Read-only lookup from trusted installation metadata. Ordinary first
     /// installation/restart does not create an update namespace as a side effect.
-    pub fn from_installation(metadata: &Directory, original: &Manifest) -> Result<Option<Self>> {
-        original.validate()?;
-        match metadata.open_directory(NAMESPACE) {
+    pub fn from_installation(metadata: &Directory, original: &R::Original) -> Result<Option<Self>> {
+        original.revision_bytes()?;
+        match metadata.open_directory(R::NAMESPACE) {
             Ok(directory) => Self::load(&directory, original).map(Some),
             Err(error) if error.downcast_ref::<Errno>() == Some(&Errno::ENOENT) => Ok(None),
             Err(error) => Err(error),
@@ -221,11 +277,11 @@ impl Snapshot {
 
     /// `directory` is the trusted /etc/zdn/native-updates leaf. No lock is
     /// acquired: producer startup may run while its parent retains install.lock.
-    pub fn load(directory: &Directory, original: &Manifest) -> Result<Self> {
-        original.validate()?;
+    pub fn load(directory: &Directory, original: &R::Original) -> Result<Self> {
+        original.revision_bytes()?;
         let Some(bytes) = optional(directory, "state.json", MAX_STATE_BYTES)? else {
             return Ok(Self {
-                api_version: API_VERSION.into(),
+                api_version: R::VERSION.into(),
                 active: None,
                 transaction: None,
                 producer_hold: false,
@@ -233,7 +289,7 @@ impl Snapshot {
         };
         let state: Self = canonical(&bytes, MAX_STATE_BYTES)?;
         ensure!(
-            state.api_version == API_VERSION,
+            state.api_version == R::VERSION,
             "unsupported native journal version"
         );
         if let Some(active) = &state.active {
@@ -256,16 +312,13 @@ impl Snapshot {
             "native transaction receipt differs"
         );
         let target_active =
-            state.active.as_ref().map(Request::bytes).transpose()? == Some(tx.request.bytes()?);
+            state.active.as_ref().map(R::bytes).transpose()? == Some(tx.request.bytes()?);
         let old_active = state
             .active
             .as_ref()
-            .map(|r| (r.image.image.as_str(), Some(r.update_id)))
-            .unwrap_or((&original.spec.image, None));
-        let expected = (
-            tx.request.expected_image.as_str(),
-            tx.request.expected_update_id,
-        );
+            .map(|r| (r.image(), Some(r.update_id())))
+            .unwrap_or((original.initial_image(), None));
+        let expected = tx.request.expected();
         ensure!(
             match tx.phase {
                 Phase::Staging | Phase::Stopping => old_active == expected,
@@ -291,22 +344,24 @@ impl Snapshot {
 /// Exclusive mutable borrow retains the original complete-spec installation
 /// lock. The caller separately authenticates native intent and mounted storage.
 #[cfg(target_os = "linux")]
-pub struct Journal<'a, 'i> {
+pub struct GenericJournal<'a, 'i, R: RevisionRequest> {
     directory: &'a Directory,
-    original: &'a Manifest,
+    original: &'a R::Original,
     installation: &'a mut Installation<'i>,
 }
+#[cfg(target_os = "linux")]
+pub type Journal<'a, 'i> = GenericJournal<'a, 'i, Request>;
 
 #[cfg(target_os = "linux")]
-impl<'a, 'i> Journal<'a, 'i> {
+impl<'a, 'i, R: RevisionRequest> GenericJournal<'a, 'i, R> {
     pub fn open(
         directory: &'a Directory,
-        original: &'a Manifest,
+        original: &'a R::Original,
         installation: &'a mut Installation<'i>,
     ) -> Result<Self> {
-        original.validate()?;
-        installation.verify_spec(&original.spec)?;
-        Snapshot::load(directory, original)?;
+        original.revision_bytes()?;
+        installation.verify_spec(original.revision_spec())?;
+        GenericSnapshot::<R>::load(directory, original)?;
         Ok(Self {
             directory,
             original,
@@ -314,8 +369,9 @@ impl<'a, 'i> Journal<'a, 'i> {
         })
     }
 
-    fn save(&self, state: &Snapshot) -> Result<()> {
-        self.installation.verify_spec(&self.original.spec)?;
+    fn save(&self, state: &GenericSnapshot<R>) -> Result<()> {
+        self.installation
+            .verify_spec(self.original.revision_spec())?;
         self.directory
             .replace("state.json", &encoded(state)?, MAX_STATE_BYTES)
     }
@@ -326,10 +382,10 @@ impl<'a, 'i> Journal<'a, 'i> {
         feature = "profiling",
         tracing::instrument(skip_all, name = "host.runtime.revision.begin")
     )]
-    pub fn begin(&mut self, request: &Request) -> Result<Snapshot> {
+    pub fn begin(&mut self, request: &R) -> Result<GenericSnapshot<R>> {
         request.bytes()?;
         bound(request, self.original)?;
-        let mut state = Snapshot::load(self.directory, self.original)?;
+        let mut state = GenericSnapshot::<R>::load(self.directory, self.original)?;
         let prior = optional(self.directory, &request.receipt(), MAX_REQUEST_BYTES)?;
         if let Some(bytes) = &prior {
             ensure!(*bytes == request.bytes()?, "native UUID reused");
@@ -337,7 +393,7 @@ impl<'a, 'i> Journal<'a, 'i> {
         let same = state
             .transaction
             .as_ref()
-            .is_some_and(|tx| tx.request.update_id == request.update_id);
+            .is_some_and(|tx| tx.request.update_id() == request.update_id());
         if same {
             ensure!(
                 state.transaction.as_ref().unwrap().request.bytes()? == request.bytes()?,
@@ -355,13 +411,13 @@ impl<'a, 'i> Journal<'a, 'i> {
             let active = state
                 .active
                 .as_ref()
-                .map(|r| (r.image.image.as_str(), Some(r.update_id)))
-                .unwrap_or((&self.original.spec.image, None));
+                .map(|r| (r.image(), Some(r.update_id())))
+                .unwrap_or((self.original.initial_image(), None));
             ensure!(
-                active == (request.expected_image.as_str(), request.expected_update_id),
+                active == request.expected(),
                 "stale native expected revision"
             );
-            state.transaction = Some(Transaction {
+            state.transaction = Some(GenericTransaction {
                 request: request.clone(),
                 phase: Phase::Staging,
             });
@@ -369,7 +425,7 @@ impl<'a, 'i> Journal<'a, 'i> {
         }
         self.directory
             .publish(&request.receipt(), &request.bytes()?, 0o600)?;
-        Snapshot::load(self.directory, self.original)
+        GenericSnapshot::<R>::load(self.directory, self.original)
     }
 
     /// Finite forward-only phase edges; retries of the current edge are exact.
@@ -381,13 +437,13 @@ impl<'a, 'i> Journal<'a, 'i> {
         feature = "profiling",
         tracing::instrument(skip_all, name = "host.runtime.revision.advance")
     )]
-    pub fn advance(&mut self, id: Uuid, phase: Phase) -> Result<Snapshot> {
-        let mut state = Snapshot::load(self.directory, self.original)?;
+    pub fn advance(&mut self, id: Uuid, phase: Phase) -> Result<GenericSnapshot<R>> {
+        let mut state = GenericSnapshot::<R>::load(self.directory, self.original)?;
         let tx = state
             .transaction
             .as_mut()
             .ok_or_else(|| eyre::eyre!("no native transaction"))?;
-        ensure!(tx.request.update_id == id, "foreign native transaction");
+        ensure!(tx.request.update_id() == id, "foreign native transaction");
         ensure!(
             optional(self.directory, &tx.request.receipt(), MAX_REQUEST_BYTES)?.is_some(),
             "native receipt missing; retry begin"
@@ -405,8 +461,7 @@ impl<'a, 'i> Journal<'a, 'i> {
             );
             if matches!(phase, Phase::Ready | Phase::Done) {
                 ensure!(
-                    state.active.as_ref().map(Request::bytes).transpose()?
-                        == Some(tx.request.bytes()?),
+                    state.active.as_ref().map(R::bytes).transpose()? == Some(tx.request.bytes()?),
                     "target is not active"
                 );
             }
@@ -421,26 +476,26 @@ impl<'a, 'i> Journal<'a, 'i> {
         }
         // Re-acknowledge durability on exact retries too.
         self.save(&state)?;
-        Snapshot::load(self.directory, self.original)
+        GenericSnapshot::<R>::load(self.directory, self.original)
     }
 
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "host.runtime.revision.publish_active")
     )]
-    pub fn publish_active(&mut self, id: Uuid) -> Result<Snapshot> {
-        let mut state = Snapshot::load(self.directory, self.original)?;
+    pub fn publish_active(&mut self, id: Uuid) -> Result<GenericSnapshot<R>> {
+        let mut state = GenericSnapshot::<R>::load(self.directory, self.original)?;
         let tx = state
             .transaction
             .as_ref()
             .ok_or_else(|| eyre::eyre!("no native transaction"))?;
         ensure!(
-            tx.request.update_id == id && tx.phase == Phase::Activating,
+            tx.request.update_id() == id && tx.phase == Phase::Activating,
             "active publication requires activating"
         );
         state.active = Some(tx.request.clone());
         self.save(&state)?;
-        Snapshot::load(self.directory, self.original)
+        GenericSnapshot::<R>::load(self.directory, self.original)
     }
 
     /// Re-hold after an interrupted/failed producer release. This never regresses
@@ -449,19 +504,19 @@ impl<'a, 'i> Journal<'a, 'i> {
         feature = "profiling",
         tracing::instrument(skip_all, name = "host.runtime.revision.hold_maintenance")
     )]
-    pub fn hold_maintenance(&mut self, id: Uuid) -> Result<Snapshot> {
-        let mut state = Snapshot::load(self.directory, self.original)?;
+    pub fn hold_maintenance(&mut self, id: Uuid) -> Result<GenericSnapshot<R>> {
+        let mut state = GenericSnapshot::<R>::load(self.directory, self.original)?;
         let tx = state
             .transaction
             .as_ref()
             .ok_or_else(|| eyre::eyre!("no native transaction"))?;
         ensure!(
-            tx.request.update_id == id && tx.phase == Phase::Ready,
+            tx.request.update_id() == id && tx.phase == Phase::Ready,
             "maintenance recovery requires ready"
         );
         state.producer_hold = true;
         self.save(&state)?;
-        Snapshot::load(self.directory, self.original)
+        GenericSnapshot::<R>::load(self.directory, self.original)
     }
 
     /// Caller must first perform fresh trusted readiness AND original producer
@@ -470,18 +525,18 @@ impl<'a, 'i> Journal<'a, 'i> {
         feature = "profiling",
         tracing::instrument(skip_all, name = "host.runtime.revision.release_maintenance")
     )]
-    pub fn release_maintenance(&mut self, id: Uuid) -> Result<Snapshot> {
-        let mut state = Snapshot::load(self.directory, self.original)?;
+    pub fn release_maintenance(&mut self, id: Uuid) -> Result<GenericSnapshot<R>> {
+        let mut state = GenericSnapshot::<R>::load(self.directory, self.original)?;
         let tx = state
             .transaction
             .as_ref()
             .ok_or_else(|| eyre::eyre!("no native transaction"))?;
         ensure!(
-            tx.request.update_id == id && tx.phase == Phase::Ready,
+            tx.request.update_id() == id && tx.phase == Phase::Ready,
             "maintenance release requires ready"
         );
         state.producer_hold = false;
         self.save(&state)?;
-        Snapshot::load(self.directory, self.original)
+        GenericSnapshot::<R>::load(self.directory, self.original)
     }
 }

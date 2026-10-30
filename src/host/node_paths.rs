@@ -10,7 +10,11 @@
 
 use eyre::{ensure, Result};
 
-use super::{files::Directory, volume::Installation, HostInstallSpec, DATA_ROOT};
+use super::{
+    files::Directory,
+    volume::{Installation, VolumeSpec},
+    HostInstallSpec, DATA_ROOT,
+};
 
 /// Create exact immutable paths beneath a freshly verified mounted volume.
 /// Existing entries are checked, never repaired, replaced or recursively chowned.
@@ -24,6 +28,40 @@ pub fn create(
     volume: &Directory,
     installation: &Installation<'_>,
     node_owner: u32,
+) -> Result<Directory> {
+    let current = create_directories(
+        spec,
+        volume,
+        installation,
+        node_owner,
+        spec.block_interval_seconds.is_some() && spec.role == "producer",
+    )?;
+    current.publish("zakura.toml", spec.config_toml.as_bytes(), 0o444)?;
+    Ok(current)
+}
+
+/// Phase one creates persistent native-key storage, never a startable config.
+pub fn create_external(
+    spec: &super::external::Provisioning,
+    volume: &Directory,
+    installation: &Installation<'_>,
+    node_owner: u32,
+) -> Result<Directory> {
+    create_directories(
+        spec,
+        volume,
+        installation,
+        node_owner,
+        spec.node_id == "node-1",
+    )
+}
+
+fn create_directories(
+    spec: &impl VolumeSpec,
+    volume: &Directory,
+    installation: &Installation<'_>,
+    node_owner: u32,
+    producer: bool,
 ) -> Result<Directory> {
     installation.verify_spec(spec)?;
     ensure!(
@@ -43,9 +81,8 @@ pub fn create(
     for name in ["state", "identity", "rpc"] {
         current.ensure_owned_directory(name, 0o700, node_owner)?;
     }
-    if spec.block_interval_seconds.is_some() && spec.role == "producer" {
+    if producer {
         current.ensure_directory("producer", 0o700)?;
     }
-    current.publish("zakura.toml", spec.config_toml.as_bytes(), 0o444)?;
     Ok(current)
 }

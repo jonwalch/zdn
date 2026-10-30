@@ -92,6 +92,7 @@ pub fn verify_rules(
 /// Preparation retains the renderer's full compatibility and size checks.
 pub(crate) struct PreparedRules {
     expected: Value,
+    exact: bool,
 }
 
 impl PreparedRules {
@@ -102,7 +103,32 @@ impl PreparedRules {
     pub(crate) fn new(manifest: &ConsensusManifest) -> Result<Self> {
         Ok(Self {
             expected: expected_rules(manifest)?,
+            exact: false,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn external(compiled: &crate::public_chain_adapter::contract::Compiled) -> Self {
+        Self {
+            expected: compiled.expected_rules.clone(),
+            exact: true,
+        }
+    }
+
+    fn compare(&self, actual: Value) -> Result<()> {
+        if self.exact {
+            ensure!(
+                serde_json::to_vec(&actual)?.len() <= MAX_RULE_RESPONSE,
+                "node effective-rule response exceeds 2 MiB"
+            );
+            ensure!(
+                actual == self.expected,
+                "node effective rules differ from compiled external rules"
+            );
+            Ok(())
+        } else {
+            compare_rules(&self.expected, actual)
+        }
     }
 
     #[cfg_attr(
@@ -117,7 +143,7 @@ impl PreparedRules {
         let actual = rpc
             .call("getchainrules", json!([]), timeout)
             .context("read node effective rules")?;
-        compare_rules(&self.expected, actual)
+        self.compare(actual)
     }
 }
 
@@ -142,7 +168,8 @@ pub fn check_readiness(
 /// Immutable manifest-derived expectations for one controller operation. Every
 /// check still observes rules, history, tip and (for producers) a fresh template.
 pub(crate) struct PreparedReadiness {
-    manifest: ConsensusManifest,
+    upgrades: Vec<(String, u32, String)>,
+    proof_of_work_disabled: bool,
     rules: PreparedRules,
     history: BTreeMap<u32, String>,
     fingerprint: String,
@@ -159,11 +186,37 @@ impl PreparedReadiness {
         let history = required_history(&manifest)?;
         let fingerprint = manifest.fingerprint()?;
         Ok(Self {
-            manifest,
+            upgrades: declared_upgrades(&manifest)
+                .into_iter()
+                .map(|(name, height)| (name.into(), height, branch_id(name).into()))
+                .collect(),
+            proof_of_work_disabled: manifest.difficulty.proof_of_work == ProofOfWork::Disabled,
             rules,
             history,
             fingerprint,
         })
+    }
+
+    /// Only call with an authenticated, independently validated compile result.
+    /// No ordinary manifest or placeholder consensus fields are manufactured.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn external(compiled: &crate::public_chain_adapter::contract::Compiled) -> Self {
+        Self {
+            upgrades: compiled
+                .upgrades
+                .iter()
+                .map(|u| (u.name.clone(), u.activation_height, u.branch_id.clone()))
+                .collect(),
+            proof_of_work_disabled: compiled.expected_rules["rules"]["difficulty"]["proofOfWork"]
+                == "disabled",
+            rules: PreparedRules::external(compiled),
+            history: compiled
+                .seed_blocks
+                .iter()
+                .map(|b| (b.height, b.hash.clone()))
+                .collect(),
+            fingerprint: compiled.native_fingerprint.clone(),
+        }
     }
 
     pub(crate) fn verify_rules(&self, rpc: &impl NodeRpc, timeout: Duration) -> Result<()> {
@@ -185,8 +238,7 @@ impl PreparedReadiness {
     ) -> Result<ReadinessReport> {
         validate_options(options)?;
         ensure!(
-            options.role != NodeRole::Producer
-                || self.manifest.difficulty.proof_of_work == ProofOfWork::Disabled,
+            options.role != NodeRole::Producer || self.proof_of_work_disabled,
             "producer readiness requires disabled proof of work"
         );
         let mut budget = Budget {
@@ -199,12 +251,7 @@ impl PreparedReadiness {
         let mut last_wait = String::from("node has not been observed");
         for attempt in 1..=MAX_ATTEMPTS {
             budget.remaining().with_context(|| last_wait.clone())?;
-            match observe(
-                &self.manifest,
-                &self.rules.expected,
-                &self.history,
-                &mut budget,
-            ) {
+            match observe(&self.upgrades, &self.rules, &self.history, &mut budget) {
                 Ok(tip) => {
                     return Ok(ReadinessReport {
                         api_version: API_VERSION.into(),
@@ -537,12 +584,12 @@ impl From<eyre::Report> for ObservationError {
 }
 
 fn observe(
-    manifest: &ConsensusManifest,
-    expected_rules: &Value,
+    upgrades: &[(String, u32, String)],
+    rules: &PreparedRules,
     history: &BTreeMap<u32, String>,
     budget: &mut Budget<'_, impl NodeRpc, impl Clock>,
 ) -> ObservationResult<ObservedTip> {
-    compare_rules(expected_rules, budget.call("getchainrules", json!([]))?)?;
+    rules.compare(budget.call("getchainrules", json!([]))?)?;
     let tip = read_tip(budget)?;
     if tip.height < *history.last_key_value().unwrap().0 {
         return Err(ObservationError::Wait(
@@ -552,7 +599,7 @@ fn observe(
     check_history(history, budget)?;
     check_tip_hash(&tip, budget)?;
     let info = budget.call("getblockchaininfo", json!([]))?;
-    if !check_chain_info(manifest, &tip, info)? {
+    if !check_chain_info(upgrades, &tip, info)? {
         return Err(ObservationError::Wait(
             "chain tip moved during observation".into(),
         ));
@@ -571,7 +618,7 @@ fn observe(
     // This never accepts a side-chain submit response in place of best-chain state.
     check_history(history, budget)?;
     check_tip_hash(&tip, budget)?;
-    compare_rules(expected_rules, budget.call("getchainrules", json!([]))?)?;
+    rules.compare(budget.call("getchainrules", json!([]))?)?;
     if read_tip(budget)? != tip {
         return Err(ObservationError::Wait(
             "chain tip moved during observation".into(),
@@ -632,7 +679,11 @@ fn check_tip_hash(
     Ok(())
 }
 
-fn check_chain_info(manifest: &ConsensusManifest, tip: &ObservedTip, info: Value) -> Result<bool> {
+fn check_chain_info(
+    upgrades: &[(String, u32, String)],
+    tip: &ObservedTip,
+    info: Value,
+) -> Result<bool> {
     let height = read_height(&info["blocks"], "blockchain-info height")?;
     let hash = read_hash(&info["bestblockhash"], "blockchain-info hash")?;
     if height != tip.height || hash != tip.hash {
@@ -643,17 +694,16 @@ fn check_chain_info(manifest: &ConsensusManifest, tip: &ObservedTip, info: Value
         "blockchain-info is not Testnet"
     );
     let mut expected_upgrades = serde_json::Map::new();
-    for (name, height) in declared_upgrades(manifest) {
-        let branch = branch_id(name);
+    for (name, height, branch) in upgrades {
         if branch == "00000000" {
             continue;
         }
         expected_upgrades.insert(
-            branch.into(),
+            branch.clone(),
             json!({
                 "name": name,
                 "activationheight": height,
-                "status": if height <= tip.height { "active" } else { "pending" }
+                "status": if *height <= tip.height { "active" } else { "pending" }
             }),
         );
     }
@@ -661,11 +711,21 @@ fn check_chain_info(manifest: &ConsensusManifest, tip: &ObservedTip, info: Value
         info["upgrades"] == Value::Object(expected_upgrades),
         "blockchain-info upgrade fields do not match the manifest"
     );
-    for (field, height) in [("chaintip", tip.height), ("nextblock", tip.height + 1)] {
+    let effective: BTreeMap<_, _> = upgrades
+        .iter()
+        .map(|(_, height, branch)| (*height, branch))
+        .collect();
+    let next_height = tip.height.checked_add(1).context("chain height overflow")?;
+    for (field, height) in [("chaintip", tip.height), ("nextblock", next_height)] {
+        let branch = effective
+            .range(..=height)
+            .next_back()
+            .context("missing genesis branch")?
+            .1;
         ensure!(
             info["consensus"][field]
                 .as_str()
-                .is_some_and(|value| value.eq_ignore_ascii_case(branch_at(manifest, height))),
+                .is_some_and(|value| value.eq_ignore_ascii_case(branch)),
             "blockchain-info {field} branch ID does not match the manifest"
         );
     }
@@ -693,4 +753,45 @@ fn read_height(value: &Value, label: &str) -> Result<u32> {
         .with_context(|| format!("invalid {label}"))?;
     ensure_height(height, label)?;
     Ok(height)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod external_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_rules_are_exact_not_ordinary_normalized_expectations() {
+        let expected =
+            json!({"apiVersion":"native-rules/v2","rules":{"genesisHash":"ab".repeat(32)}});
+        let rules = PreparedRules {
+            expected: expected.clone(),
+            exact: true,
+        };
+        rules.compare(expected.clone()).unwrap();
+        let mut changed = expected;
+        changed["rules"]["genesisHash"] = "AB".repeat(32).into();
+        assert!(rules.compare(changed).is_err());
+        assert!(rules
+            .compare(json!({"apiVersion":"native-rules/v2"}))
+            .is_err());
+    }
+
+    #[test]
+    fn blockchain_info_uses_companion_schedule_without_an_ordinary_manifest() {
+        let upgrades = vec![
+            ("Genesis".into(), 0, "00000000".into()),
+            ("FutureNativeUpgrade".into(), 1, "aabbccdd".into()),
+        ];
+        let tip = ObservedTip {
+            height: 0,
+            hash: "ab".repeat(32),
+        };
+        let info = json!({"blocks":0,"bestblockhash":tip.hash,"chain":"test",
+            "upgrades":{"aabbccdd":{"name":"FutureNativeUpgrade","activationheight":1,"status":"pending"}},
+            "consensus":{"chaintip":"00000000","nextblock":"aabbccdd"}});
+        assert!(check_chain_info(&upgrades, &tip, info.clone()).unwrap());
+        let mut wrong = info;
+        wrong["consensus"]["nextblock"] = "00000000".into();
+        assert!(check_chain_info(&upgrades, &tip, wrong).is_err());
+    }
 }

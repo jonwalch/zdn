@@ -79,11 +79,11 @@ pub struct Config<'a> {
 }
 
 impl Config<'_> {
-    pub(super) fn path(&self, logical: &str) -> PathBuf {
+    pub(in crate::host) fn path(&self, logical: &str) -> PathBuf {
         self.root.join(logical.trim_start_matches('/'))
     }
 
-    pub(super) fn open(&self, logical: &str) -> Result<Directory> {
+    pub(in crate::host) fn open(&self, logical: &str) -> Result<Directory> {
         let mut directory = Directory::open(self.root, self.owner)?;
         for component in Path::new(logical).components() {
             match component {
@@ -102,7 +102,7 @@ impl Config<'_> {
     /// distro tool symlinks, then authenticate aliases and target ancestors.
     /// Keep the invoked name: multicall binaries dispatch on their alias.
     /// An unsafe earlier candidate fails closed instead of selecting a fallback.
-    pub(super) fn tool(&self, name: &str) -> Result<PathBuf> {
+    pub(in crate::host) fn tool(&self, name: &str) -> Result<PathBuf> {
         for parent in ["/usr/sbin", "/usr/bin", "/sbin", "/bin"] {
             let candidate = self.path(parent).join(name);
             let resolved = match fs::canonicalize(&candidate) {
@@ -173,7 +173,7 @@ impl Config<'_> {
         eyre::bail!("required host tool is unavailable")
     }
 
-    pub(super) fn probe_tools(&self) -> Result<probe::Tools> {
+    pub(in crate::host) fn probe_tools(&self) -> Result<probe::Tools> {
         Ok(probe::Tools {
             lsblk: self.tool("lsblk")?,
             findmnt: self.tool("findmnt")?,
@@ -281,6 +281,23 @@ pub(super) fn authenticated(path: &Path) -> Result<(Manifest, Config<'static>)> 
 /// Each operation owns separate command receipts. Run/produce finally exec,
 /// preserving systemd MainPID; no workload deadline follows that handoff.
 /// Runtime selection never establishes first-install or producer authority.
+pub(in crate::host) fn notify_starting() -> Result<()> {
+    if let Some(socket) = std::env::var_os("NOTIFY_SOCKET") {
+        let address = if let Some(name) = socket.as_encoded_bytes().strip_prefix(b"@") {
+            SocketAddr::from_abstract_name(name)?
+        } else {
+            SocketAddr::from_pathname(Path::new(&socket))?
+        };
+        let notify = UnixDatagram::unbound()?;
+        notify.set_write_timeout(Some(Duration::from_secs(1)))?;
+        ensure!(
+            notify.send_to_addr(b"READY=1", &address)? == 7,
+            "host startup notification failed"
+        );
+    }
+    Ok(())
+}
+
 pub fn dispatch(
     manifest: &Manifest,
     config: Config<'_>,
@@ -537,19 +554,7 @@ pub fn dispatch(
         // systemd must not start Ready while Run still owns install.lock.
         // This releases ExecStartPost, which retains actual chain readiness;
         // an exec failure still fails the service through its main process.
-        if let Some(socket) = std::env::var_os("NOTIFY_SOCKET") {
-            let address = if let Some(name) = socket.as_encoded_bytes().strip_prefix(b"@") {
-                SocketAddr::from_abstract_name(name)?
-            } else {
-                SocketAddr::from_pathname(Path::new(&socket))?
-            };
-            let notify = UnixDatagram::unbound()?;
-            notify.set_write_timeout(Some(Duration::from_secs(1)))?;
-            ensure!(
-                notify.send_to_addr(b"READY=1", &address)? == 7,
-                "host startup notification failed"
-            );
-        }
+        notify_starting()?;
         return Err(Command::new(docker)
             .args(args)
             .env_clear()

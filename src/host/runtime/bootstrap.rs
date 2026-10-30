@@ -10,6 +10,41 @@ use super::{Manifest, INSTALL_PROTOCOL};
 pub fn render(manifest: &Manifest) -> Result<String> {
     let bytes = manifest.bytes()?;
     let helper = &manifest.runtime.helper;
+    render_payload(bytes, helper, INSTALL_PROTOCOL, "__host-install")
+}
+
+/// Same bounded authenticated helper delivery and outer process-group cleanup,
+/// selecting only the versioned identity-only action, never node installation.
+#[cfg(target_os = "linux")]
+pub fn render_external_identity(
+    manifest: &crate::host::external::identity::Manifest,
+) -> Result<String> {
+    render_payload(
+        manifest.bytes()?,
+        &manifest.sources.host_helper,
+        crate::host::external::identity::SCHEMA,
+        "__external-native-identity",
+    )
+}
+
+/// Final identity-pinned service installation. The same helper pin delivery,
+/// finite action deadline and outer cleanup are used by both host branches.
+#[cfg(target_os = "linux")]
+pub fn render_external(manifest: &crate::host::external::runtime::Manifest) -> Result<String> {
+    render_payload(
+        manifest.bytes()?,
+        &manifest.chain.objects.host_helper,
+        crate::host::external::runtime::SCHEMA,
+        "__external-install",
+    )
+}
+
+fn render_payload(
+    bytes: Vec<u8>,
+    helper: &crate::host::S3Object,
+    protocol: &str,
+    operation: &str,
+) -> Result<String> {
     // All interpolated provider fields are validated by Manifest; the manifest
     // itself is base64 data, never shell syntax. This fits the existing node
     // installer's 5295s phase and 7200s SSM envelope, not the gateway envelope.
@@ -55,7 +90,7 @@ status=0
 wait "$child" || status=$?
 stop_group
 (( status == 0 )) || fail 'native installer capability unavailable'
-timeout --signal=TERM --kill-after=10s 4805s "$work/zdn" __host-install --protocol {protocol} < "$work/manifest" 2>/dev/null &
+timeout --signal=TERM --kill-after=10s 4805s "$work/zdn" {operation} --protocol {protocol} < "$work/manifest" 2>/dev/null &
 child=$!
 status=0
 wait "$child" || status=$?
@@ -71,6 +106,7 @@ ZDN_NATIVE_HOST_INSTALL
         region = helper.region,
         bytes = helper.bytes,
         digest = helper.sha256,
-        protocol = INSTALL_PROTOCOL,
+        protocol = protocol,
+        operation = operation,
     ))
 }

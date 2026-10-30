@@ -1586,6 +1586,7 @@ fn cli_package_verifies_stages_and_recovers_without_originals() {
                     dockerfile: "Dockerfile".into(),
                     context: ".".into(),
                     target: "runtime".into(),
+                    cargo_features: Vec::new(),
                 },
             });
             let bytes = serde_json::to_vec(&package.artifact_set.node_image).unwrap();
@@ -5544,6 +5545,7 @@ fn completed_handoff(
                     dockerfile: "Dockerfile".into(),
                     context: ".".into(),
                     target: "runtime".into(),
+                    cargo_features: Vec::new(),
                 },
             };
             let mut image: ImageRecord =
@@ -6849,6 +6851,7 @@ fn handoff_excludes_only_complete_matching_build_workspaces() {
             dockerfile: "Dockerfile".into(),
             context: ".".into(),
             target: "runtime".into(),
+            cargo_features: Vec::new(),
         },
     };
     let request = f.deployment.cluster.as_mut().unwrap();

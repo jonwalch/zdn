@@ -112,6 +112,7 @@ impl ImmutableInputReport {
             &[
                 ("access.visibility", "/access/visibility"),
                 ("apiVersion", "/apiVersion"),
+                ("chain", "/chain"),
                 ("deployment.placement", "/deployment/placement"),
                 ("deployment.provider", "/deployment/provider"),
                 ("name", "/name"),

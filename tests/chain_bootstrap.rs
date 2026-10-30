@@ -112,6 +112,7 @@ struct Sim {
     submissions: VecDeque<Submission>,
     pending: Vec<(u64, usize, String)>,
     hash_error: Option<RpcError>,
+    above_tip_code: i64,
     hash_override: BTreeMap<i64, Result<Value, RpcError>>,
     hash_reads: u64,
     commit_after_hash_read: Option<(u64, Vec<(usize, String)>)>,
@@ -158,6 +159,7 @@ impl FakeNode {
                 submissions: VecDeque::new(),
                 pending: Vec::new(),
                 hash_error: None,
+                above_tip_code: -32602,
                 hash_override: BTreeMap::new(),
                 hash_reads: 0,
                 commit_after_hash_read: None,
@@ -253,7 +255,7 @@ impl NodeRpc for FakeNode {
                     };
                     if height > tip {
                         return Err(remote(
-                            -32602,
+                            sim.above_tip_code,
                             "Provided index is greater than the current tip",
                         ));
                     }
@@ -570,9 +572,32 @@ fn wrong_existing_hash_or_missing_prefix_or_unknown_tip_never_submits() {
 }
 
 #[test]
+fn bootstrap_accepts_exact_compatibility_and_standard_above_tip_errors() {
+    for code in [-1, -32602] {
+        let fixture = Fixture::new(3);
+        let clock = FakeClock::default();
+        let node = fixture.node(&clock);
+        node.state.lock().unwrap().above_tip_code = code;
+        let report = load_seed_history(
+            &fixture.manifest,
+            &fixture.bundle,
+            &node,
+            &clock,
+            &options(),
+        )
+        .unwrap();
+        assert_eq!(report.seed_tip_hash, hash(2));
+        assert_eq!(report.submitted_blocks, 3);
+        assert!(report.seed_history_present);
+    }
+}
+
+#[test]
 fn only_precise_known_missing_errors_can_authorize_loading() {
     for rpc_error in [
         remote(-1, "database unavailable"),
+        remote(-1, "Provided index is greater than the current tip "),
+        remote(-20, "Provided index is greater than the current tip"),
         remote(-8, "bad parameter"),
         remote(-32602, "Index conversion failed"),
         remote(-32602, "Provided index is not valid"),
@@ -1076,6 +1101,7 @@ fn deadline_in_preflight_prevents_submission_and_starts_at_invocation() {
 fn impossible_missing_tip_errors_never_authorize_an_empty_chain() {
     for error in [
         remote(-8, "Block not found"),
+        remote(-1, "Provided index is greater than the current tip"),
         remote(-32602, "Provided index is greater than the current tip"),
     ] {
         let fixture = Fixture::new(1);

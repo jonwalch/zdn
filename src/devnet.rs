@@ -31,6 +31,9 @@ use uuid::Uuid;
 pub const API_VERSION: &str = "zdn-private-nodes/v1alpha1";
 pub const MAX_HELPER_BYTES: u64 = 256 * 1024 * 1024;
 
+#[cfg(target_os = "linux")]
+pub mod external;
+
 /// Fresh requests are native; legacy inputs remain data, not execution authority.
 pub fn select_native_runtime(
     saved: Option<Option<&str>>,
@@ -74,6 +77,26 @@ pub(crate) fn validate_native_runtime(
 )]
 pub fn capabilities(config: &Config) -> Result<Value> {
     config.validate()?;
+    if matches!(
+        config.chain,
+        Some(crate::config::ChainSelection::External { .. })
+    ) {
+        return Ok(json!({
+            "apiVersion": "zdn-capabilities/v1alpha1",
+            "configurationValid": true,
+            "chainSelection": "external",
+            "requestedServicesSupported": cfg!(target_os = "linux") && unsupported_services(config).is_empty(),
+            "requestedServices": config.services,
+            "deploymentPrerequisites": {
+                "status": if cfg!(target_os = "linux") { "unchecked" } else { "unsupported-platform" },
+                "explicitInputHints": ["external stage", "external verify", "devnet render", "devnet up"],
+                "unchecked": ["trusted-public-artifacts", "feature-bound-image-or-source-build", "host-sandbox-prerequisites", "aws-identity", "aws-permissions"]
+            },
+            "liveReadinessChecked": false,
+            "paymentQualification": "pending",
+            "launchReady": false
+        }));
+    }
     let unsupported = unsupported_services(config);
     // Common explicit artifact inputs only: image/source build inputs vary by
     // source selection, and a verified --package can supply artifact files.
@@ -119,6 +142,7 @@ fn unsupported_services(config: &Config) -> Vec<&'static str> {
 
 /// Keep unimplemented service requests from producing a partial deployment.
 pub fn require_supported_services(config: &Config) -> Result<()> {
+    config.require_ordinary_chain()?;
     ensure!(
         unsupported_services(config).is_empty(),
         "wallet and faucet services are not implemented for devnet deployment; explicitly set services.wallet and services.faucet to false"
@@ -577,6 +601,7 @@ pub fn stage_with_lightwallet(
     directory: &Path,
 ) -> Result<ClusterRequest> {
     config.validate()?;
+    config.require_ordinary_chain()?;
     require_supported_services(config)?;
     ensure!(config.services.lightwallet == lightwallet_paths.is_some(), "services.lightwallet requires all three lightwallet image inputs; disable it for a node-only deployment");
     let staging = tempfile::tempdir()?;
@@ -702,6 +727,7 @@ pub fn validate_chain_inputs(
     manifest: &[u8],
     bundle: &Path,
 ) -> Result<ConsensusManifest> {
+    config.require_ordinary_chain()?;
     ensure!(
         manifest.len() <= 2 * 1024 * 1024,
         "manifest exceeds size limit"

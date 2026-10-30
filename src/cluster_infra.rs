@@ -5,7 +5,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::Ipv4Addr,
+    net::{Ipv4Addr, SocketAddr},
 };
 
 use eyre::{ensure, Context, ContextCompat, Result};
@@ -23,6 +23,33 @@ pub const PRODUCER_NODE_ID: &str = "node-1";
 pub const LIGHTWALLET_CACHE_DISK: &str = "lightwalletCacheDisk";
 pub const LIGHTWALLET_CACHE_ATTACHMENT: &str = "lightwalletCacheAttachment";
 pub const LIGHTWALLET_CACHE_DEVICE: &str = "/dev/sdg";
+
+/// Explicit native transport selection, never inferred from ordinary P2P.
+/// Only an unspecified IPv4 bind or an exact cohort private address is valid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeListener(SocketAddr);
+
+impl NativeListener {
+    pub fn new(address: SocketAddr, topology: &ClusterTopology) -> Result<Self> {
+        ensure!(address.port() != 0, "native listener port must be nonzero");
+        let std::net::IpAddr::V4(ip) = address.ip() else {
+            eyre::bail!("native cohort requires an IPv4 listener")
+        };
+        ensure!(
+            ip.is_unspecified() || topology.nodes().iter().any(|node| node.private_ip == ip),
+            "native listener must bind the intended private cohort"
+        );
+        Ok(Self(address))
+    }
+
+    pub fn port(self) -> u16 {
+        self.0.port()
+    }
+
+    pub fn address(self) -> SocketAddr {
+        self.0
+    }
+}
 
 /// Initial bounded service allocations, not qualified capacity recommendations.
 /// Save this value in the immutable deployment request before creating hosts.
@@ -274,6 +301,43 @@ impl ClusterTopology {
             .filter(|node| node.node_id != node_id)
             .map(|node| format!("{}:{P2P_PORT}", node.private_ip))
             .collect())
+    }
+
+    /// Render only the selected native UDP listener between exact cohort /32s.
+    /// No TCP P2P rule or additional service is added; HTTPS remains unchanged.
+    /// Callers must select this explicitly for the external native transport.
+    pub fn render_native(
+        &self,
+        base: PulumiProgram,
+        spec: &FoundationSpec,
+        user_data: &BTreeMap<String, String>,
+        listener: NativeListener,
+    ) -> Result<PulumiProgram> {
+        NativeListener::new(listener.address(), self)?;
+        let mut program = self.render(base, spec, user_data)?;
+        let Definition::SecurityGroup(group) = &mut program
+            .resources
+            .get_mut("hostSecurityGroup")
+            .expect("validated security group")
+            .definition
+        else {
+            unreachable!("validated security group")
+        };
+        let native = SecurityRule {
+            protocol: "udp".into(),
+            from_port: listener.port(),
+            to_port: listener.port(),
+            cidr_blocks: self
+                .nodes()
+                .iter()
+                .map(|node| format!("{}/32", node.private_ip))
+                .collect(),
+            description: "Native transport between the private cohort nodes".into(),
+        };
+        group.ingress = vec![native.clone()];
+        group.egress[1] = native;
+        program.validate_references()?;
+        Ok(program)
     }
 
     /// `base` must be the team-constrained `Deployment::render()` result.

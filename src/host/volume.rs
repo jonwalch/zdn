@@ -19,18 +19,57 @@ pub mod evidence;
 pub mod prepare;
 pub mod probe;
 
+/// Shared persistence identity, not consensus or execution authority. The two
+/// sealed implementations keep original ordinary bytes and a separate external
+/// provisioning identity which does not depend on late-bound peer IDs/config.
+pub trait VolumeSpec: sealed::Sealed {
+    fn validate_volume(&self) -> Result<()>;
+    fn volume_id(&self) -> &str;
+    fn new_volume(&self) -> Option<&super::NewVolumeAuthorization>;
+    fn node_root(&self) -> String;
+    fn install_sha256(&self) -> Result<String>;
+    fn volume_identity(&self) -> Result<Vec<u8>>;
+}
+
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+impl sealed::Sealed for HostInstallSpec {}
+impl VolumeSpec for HostInstallSpec {
+    fn validate_volume(&self) -> Result<()> {
+        self.validate()
+    }
+    fn volume_id(&self) -> &str {
+        &self.volume_id
+    }
+    fn new_volume(&self) -> Option<&super::NewVolumeAuthorization> {
+        self.new_volume.as_ref()
+    }
+    fn node_root(&self) -> String {
+        self.node_root()
+    }
+    fn install_sha256(&self) -> Result<String> {
+        self.install_sha256()
+    }
+    fn volume_identity(&self) -> Result<Vec<u8>> {
+        encoded(json!({
+            "apiVersion": "zdn-host-volume/v1alpha1",
+            "deploymentId": self.deployment_id,
+            "nodeId": self.node_id,
+            "volumeId": self.volume_id,
+            "consensusFingerprint": self.consensus_fingerprint,
+            "installSha256": self.install_sha256()?,
+        }))
+    }
+}
+
 /// Exact original volume identity without taking a lock or publishing a file.
 /// Long-lived producer startup uses this read-only boundary while its parent
 /// activation action retains the installation lock.
-pub(super) fn identity(spec: &HostInstallSpec) -> Result<Vec<u8>> {
-    encoded(json!({
-        "apiVersion": "zdn-host-volume/v1alpha1",
-        "deploymentId": spec.deployment_id,
-        "nodeId": spec.node_id,
-        "volumeId": spec.volume_id,
-        "consensusFingerprint": spec.consensus_fingerprint,
-        "installSha256": spec.install_sha256()?,
-    }))
+pub(super) fn identity(spec: &impl VolumeSpec) -> Result<Vec<u8>> {
+    spec.validate_volume()?;
+    spec.volume_identity()
 }
 
 /// Holds the same `install.lock` used by historical install/update/recovery
@@ -48,7 +87,7 @@ impl<'a> Installation<'a> {
     /// Validate the saved spec before taking authority or writing anything.
     /// Existing identity bytes/mode must match; a different install is never
     /// adopted or repaired. Exact retries retain the existing inode.
-    pub fn acquire(directory: &'a Directory, spec: &HostInstallSpec) -> Result<Self> {
+    pub fn acquire(directory: &'a Directory, spec: &impl VolumeSpec) -> Result<Self> {
         Self::acquire_with_initialization(directory, spec, None)
     }
 
@@ -61,7 +100,25 @@ impl<'a> Installation<'a> {
         spec: &HostInstallSpec,
         manifest: &[u8],
     ) -> Result<Self> {
-        Self::acquire_with_initialization(directory, spec, Some(manifest))
+        Self::acquire_with_initialization(
+            directory,
+            spec,
+            Some(("native-install-intent.json", manifest)),
+        )
+    }
+
+    /// Phase-one external provisioning is immutable before native key creation.
+    /// The final peer/config selection is a later, separately pinned record.
+    pub(in crate::host) fn acquire_external(
+        directory: &'a Directory,
+        spec: &super::external::Provisioning,
+    ) -> Result<Self> {
+        let bytes = spec.bytes()?;
+        Self::acquire_with_initialization(
+            directory,
+            spec,
+            Some(("external-install-intent.json", &bytes)),
+        )
     }
 
     #[cfg_attr(
@@ -70,25 +127,25 @@ impl<'a> Installation<'a> {
     )]
     fn acquire_with_initialization(
         directory: &'a Directory,
-        spec: &HostInstallSpec,
-        initialization: Option<&[u8]>,
+        spec: &impl VolumeSpec,
+        initialization: Option<(&str, &[u8])>,
     ) -> Result<Self> {
         let identity = identity(spec)?;
         let format_intent = encoded(json!({
             "apiVersion": "zdn-host-format/v1alpha1",
             "identity": serde_json::from_slice::<Value>(&identity)?,
-            "newVolume": spec.new_volume,
+            "newVolume": spec.new_volume(),
         }))?;
         let lock = directory.lock("install.lock")?;
-        if let Some(manifest) = initialization {
+        if let Some((name, manifest)) = initialization {
             match directory.read("identity.json", 8192) {
                 Ok(existing) => {
                     ensure!(existing == identity, "host volume record differs");
-                    require_record(directory, "native-install-intent.json", manifest)?;
-                    directory.publish("native-install-intent.json", manifest, 0o600)?;
+                    require_record(directory, name, manifest)?;
+                    directory.publish(name, manifest, 0o600)?;
                 }
                 Err(error) if error.downcast_ref::<Errno>() == Some(&Errno::ENOENT) => {
-                    directory.publish("native-install-intent.json", manifest, 0o600)?;
+                    directory.publish(name, manifest, 0o600)?;
                 }
                 Err(error) => return Err(error),
             }
@@ -99,7 +156,7 @@ impl<'a> Installation<'a> {
             _lock: lock,
             identity,
             format_intent,
-            requires_format_intent: spec.new_volume.is_some(),
+            requires_format_intent: spec.new_volume().is_some(),
         })
     }
 
@@ -111,7 +168,7 @@ impl<'a> Installation<'a> {
     }
 
     /// Bind another phase of the same action to this guard's complete spec.
-    pub(crate) fn verify_spec(&self, spec: &HostInstallSpec) -> Result<String> {
+    pub(crate) fn verify_spec(&self, spec: &impl VolumeSpec) -> Result<String> {
         let digest = spec.install_sha256()?;
         let identity: Value = serde_json::from_slice(&self.identity)?;
         ensure!(

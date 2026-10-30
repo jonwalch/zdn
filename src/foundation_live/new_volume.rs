@@ -61,10 +61,7 @@ impl CreationIntent {
         )
     )]
     fn for_deployment(deployment: &Deployment, started_at: u64) -> Result<Self> {
-        let request = deployment
-            .cluster
-            .as_ref()
-            .context("missing cluster request")?;
+        let topology = deployment.node_topology()?;
         let program = deployment.render()?;
         let prefix = format!(
             "urn:pulumi:zdn-{}::{}::",
@@ -72,7 +69,7 @@ impl CreationIntent {
             program.name
         );
         let mut nodes = BTreeMap::new();
-        for node in request.topology()?.nodes() {
+        for node in topology.nodes() {
             let volume = serde_json::to_value(&program.resources[&node.volume_key])?;
             nodes.insert(
                 node.node_id,
@@ -93,11 +90,12 @@ impl CreationIntent {
                 },
             );
         }
-        let lightwallet = request
-            .lightwallet
+        let lightwallet = deployment
+            .cluster
             .as_ref()
+            .and_then(|request| request.lightwallet.as_ref())
             .map(|service| -> Result<_> {
-                let node = request.topology()?.lightwallet_node();
+                let node = topology.lightwallet_node();
                 let volume = serde_json::to_value(&program.resources[LIGHTWALLET_CACHE_DISK])?;
                 Ok(ExpectedCache {
                     node_id: node.node_id,
@@ -122,12 +120,24 @@ impl CreationIntent {
             .transpose()?;
         Ok(Self {
             version: 1,
-            request_sha256: devnet::sha256(&serde_json::to_vec(&(
-                deployment.owner_id,
-                &deployment.spec,
-                &deployment.team,
-                request,
-            ))?),
+            request_sha256: if let Some(external) = &deployment.external {
+                devnet::sha256(&serde_json::to_vec(&(
+                    deployment.owner_id,
+                    &deployment.spec,
+                    &deployment.team,
+                    external,
+                ))?)
+            } else {
+                devnet::sha256(&serde_json::to_vec(&(
+                    deployment.owner_id,
+                    &deployment.spec,
+                    &deployment.team,
+                    deployment
+                        .cluster
+                        .as_ref()
+                        .context("missing cluster request")?,
+                ))?)
+            },
             started_at,
             availability_zone: deployment.spec.availability_zone.clone(),
             size_gib: deployment.spec.size.allocation().chain_disk_gib,
@@ -623,6 +633,15 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
                     .try_exists()?,
                 "cannot add new-volume authorization after installer publication"
             );
+            if deployment.external.is_some() {
+                for suffix in [
+                    "external-identity-install.sh",
+                    "external-runtime-install.sh",
+                ] {
+                    ensure!(!self.deployment_directory.join(format!("{}-{suffix}", target.stem())).try_exists()?,
+                        "cannot add external new-volume authority after identity or runtime publication");
+                }
+            }
         }
         let mut progress = || {
             pulse(

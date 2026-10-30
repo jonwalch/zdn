@@ -62,6 +62,24 @@ impl Fixture {
         fs::set_permissions(plugin, fs::Permissions::from_mode(0o755)).unwrap();
         Self { root, endpoints }
     }
+    fn select_external(&mut self) {
+        self.endpoints.api_version = zdn::endpoints::EXTERNAL_API_VERSION.into();
+        self.endpoints.external = Some(zdn::endpoints::ExternalAccess {
+            request_sha256: "12".repeat(32),
+            package_sha256: "23".repeat(32),
+            compiled_sha256: "34".repeat(32),
+            native_inventory_sha256: "45".repeat(32),
+            host_manifest_sha256: "56".repeat(32),
+            service_sha256: "67".repeat(32),
+            body_class: zdn::rpc_limits::BodyClass::LargeHexV1,
+        });
+        self.endpoints.validate().unwrap();
+        fs::write(
+            self.root.path().join("endpoints.json"),
+            serde_json::to_vec(&self.endpoints).unwrap(),
+        )
+        .unwrap();
+    }
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_zdn"));
         command
@@ -878,6 +896,476 @@ fn one_shot_rpc_returns_only_the_result_after_verified_connection_cleanup() {
         assert!(observed["authorization"].is_null());
         assert_eq!(observed["contentType"], "application/json");
         f.assert_rpc_closed();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn named_external_fixture() -> (Fixture, zdn::foundation::Deployment) {
+    use std::collections::BTreeMap;
+    use zdn::{
+        devnet::external::{artifact_limits, ExternalRequest},
+        foundation::{self, external::ExternalDeployment, Deployment, DeploymentFile},
+        host::external::{runtime, Manifest, Provisioning},
+        native_peers::{NativeCohort, NativeInventoryStore, IDENTITY_SCHEMA},
+        public_chain_adapter::{
+            contract::{Compiled, Pin, RenderOptions},
+            package::CoreTrust,
+        },
+        state::{BindingContext, StateStore},
+    };
+
+    let mut f = Fixture::new();
+    let compiled = Compiled {
+        schema: zdn::public_chain_adapter::contract::SCHEMA.into(),
+        native_name: "Fixture".into(),
+        native_fingerprint: f.endpoints.consensus_fingerprint.clone(),
+        expected_rules: json!({}),
+        upgrades: vec![],
+        seed_blocks: vec![],
+        cargo_features: vec!["experimental-slh-dsa-b128s".into()],
+        required_capabilities: vec![
+            "native-managed-identity-v1".into(),
+            "slh-dsa-b128s-v2".into(),
+        ],
+        transport_class: "large-hex-v1".into(),
+    };
+    let mut artifacts: BTreeMap<_, _> = artifact_limits()
+        .into_keys()
+        .map(|name| {
+            (
+                name,
+                zdn::devnet::Artifact {
+                    bytes: 1,
+                    sha256: "12".repeat(32),
+                },
+            )
+        })
+        .collect();
+    let compiled_pin = Pin::of(&serde_json::to_vec(&compiled).unwrap());
+    artifacts.insert(
+        "compiled.json".into(),
+        zdn::devnet::Artifact {
+            bytes: compiled_pin.bytes,
+            sha256: compiled_pin.sha256,
+        },
+    );
+    let request = ExternalRequest {
+        schema: zdn::devnet::external::SCHEMA.into(),
+        config_sha256: "ab".repeat(32),
+        trust: CoreTrust {
+            package: Pin { bytes: 1, sha256: "12".repeat(32) },
+            executable: Pin { bytes: 1, sha256: "12".repeat(32) },
+            adapter_selection_sha256: "34".repeat(32),
+        },
+        image: serde_json::from_value(json!({
+            "apiVersion":zdn::image::FEATURE_API_VERSION,
+            "image":format!("123456789012.dkr.ecr.us-east-1.amazonaws.com/zdn/private-team/node@sha256:{}", "12".repeat(32)),
+            "configDigest":format!("sha256:{}", "12".repeat(32)), "platform":"linux/amd64",
+            "provenance":{"kind":"release","revision":"ab".repeat(20),"version":"v1.0.0"},
+            "capabilities":zdn::image::ImageCapabilities::for_requirements(compiled.image_requirements().unwrap()).unwrap(),
+            "binaryPath":zdn::image::NODE_BINARY,"environmentLauncher":zdn::image::ENV_ENTRYPOINT,
+        })).unwrap(),
+        compiled,
+        build: None,
+        node_count: 2,
+        block_interval_seconds: 25,
+        production_limits: None,
+        artifacts,
+    };
+    let mut team: zdn::aws::TeamDefinition = serde_json::from_value(json!({
+        "apiVersion":"zdn-team/v1alpha1","teamId":"private-team","revision":1,"bootstrapId":f.endpoints.bootstrap_id,
+        "aws":{"accountId":"123456789012","region":"us-east-1"},
+        "state":{"backend":"s3://zdn-private-team/pulumi/zdn","kmsKeyArn":"arn:aws:kms:us-east-1:123456789012:key/00000000-0000-4000-8000-000000000001"},
+    })).unwrap();
+    team.deployment = Some(zdn::access::DeploymentAccess::managed(&team));
+    team.api_version = zdn::access::TEAM_ROLE_API_VERSION.into();
+    let mut deployment = Deployment::new(serde_json::from_value(json!({
+        "scope":f.endpoints.scope,"network_id":f.endpoints.network_id,"aws_profile":"participant",
+        "ami_id":"ami-0123456789abcdef0","availability_zone":"us-east-1a","size":"medium","retain_chain_disk":true,
+    })).unwrap(), team.clone()).unwrap();
+    deployment.external =
+        Some(ExternalDeployment::new(request.clone(), 18233, "tFixture".into()).unwrap());
+    deployment.stack_initialized = true;
+    let nodes: BTreeMap<_, _> = deployment
+        .node_topology()
+        .unwrap()
+        .nodes()
+        .into_iter()
+        .enumerate()
+        .map(|(index, node)| {
+            (
+                node.node_id.clone(),
+                json!({"node_id":node.node_id,"instance_id":format!("i-{:017x}", index + 1),
+            "private_ip":node.private_ip,"volume_id":format!("vol-{:017x}", index + 1)}),
+            )
+        })
+        .collect();
+    deployment.outputs = Some(serde_json::from_value(json!({
+        "schema_version":1,"scope":f.endpoints.scope,"network_id":f.endpoints.network_id,"availability_zone":"us-east-1a",
+        "vpc_id":"vpc-12345678","private_subnet_id":"subnet-12345678","instance_id":"i-00000000000000001","private_ip":"10.90.1.10",
+        "chain_volume_id":"vol-00000000000000001","retain_chain_disk":true,"security_group_id":"sg-12345678",
+        "nat_gateway_id":"nat-12345678","eip_allocation_id":"eipalloc-12345678","nodes":nodes,
+    })).unwrap());
+    let store = StateStore::open(f.root.path().join("state")).unwrap();
+    fs::create_dir(f.root.path().join("config")).unwrap();
+    let config = f.root.path().join("config/devnet.yaml");
+    fs::write(&config, "fixture only").unwrap();
+    let context = BindingContext::new(config, None, None, team.scope()).unwrap();
+    store
+        .bind_with_id(&context, "external-demo", || deployment.spec.network_id)
+        .unwrap();
+    foundation::private_directory(&store.root().join("profiles")).unwrap();
+    foundation::write_json(
+        &store.root().join("profiles/devnet.json"),
+        &json!({"team":team,"awsProfile":"participant"}),
+    )
+    .unwrap();
+    let file = DeploymentFile::open(store.root(), deployment.spec.network_id).unwrap();
+    let directory = file.directory();
+    let external = deployment.external.as_ref().unwrap();
+    let cohort = NativeCohort::new(
+        deployment.spec.network_id,
+        request.artifacts["descriptor.json"].sha256.clone(),
+        request.compiled.native_fingerprint.clone(),
+        &external.topology().unwrap(),
+        &deployment.outputs.as_ref().unwrap().nodes,
+        external.listener().unwrap(),
+    )
+    .unwrap();
+    let inventory_store =
+        NativeInventoryStore::open(&directory.join("native-inventory"), cohort.clone()).unwrap();
+    for (index, member) in cohort.members().iter().enumerate() {
+        inventory_store.record(&member.node_id, &serde_json::to_vec(&json!({
+            "schema":IDENTITY_SCHEMA,"nodeId":format!("{:064x}", index + 1),"chainFingerprint":request.compiled.native_fingerprint,
+        })).unwrap()).unwrap();
+    }
+    let inventory = inventory_store.read().unwrap();
+    foundation::private_directory(&directory.join("artifacts")).unwrap();
+    foundation::write_private(
+        &directory.join("artifacts/external-request.json"),
+        &request.bytes().unwrap(),
+    )
+    .unwrap();
+    let mut manifests = BTreeMap::new();
+    for member in cohort.members() {
+        let node = &member.node_id;
+        let provisioning = Provisioning {
+            schema: "zdn-external-provisioning/v1".into(),
+            deployment_id: deployment.spec.network_id,
+            node_id: node.clone(),
+            volume_id: deployment.outputs.as_ref().unwrap().nodes[node]
+                .volume_id
+                .clone(),
+            descriptor_sha256: request.artifacts["descriptor.json"].sha256.clone(),
+            native_fingerprint: request.compiled.native_fingerprint.clone(),
+            request: Pin::of(&request.bytes().unwrap()),
+            new_volume: None,
+        };
+        let root = provisioning.node_root();
+        let mut options = RenderOptions {
+            deployment_id: deployment.spec.network_id.to_string(),
+            node_id: node.clone(),
+            role: if node == "node-1" {
+                "producer"
+            } else {
+                "follower"
+            }
+            .into(),
+            image_digest: request.image.manifest_digest().unwrap().into(),
+            state_dir: format!("{root}/state"),
+            identity_dir: format!("{root}/identity"),
+            cookie_dir: format!("{root}/rpc"),
+            rpc_listen: "127.0.0.1:18232".into(),
+            native_listen: "0.0.0.0:18233".into(),
+            expected_node_id: String::new(),
+            peers: vec![],
+            reward_address: (node == "node-1").then(|| "tFixture".into()),
+        };
+        inventory.bind_render_options(&mut options).unwrap();
+        let config_toml = "structural fixture, never executed".to_owned();
+        let allocation = deployment.spec.size.allocation();
+        let runtime = runtime::Manifest {
+            schema: runtime::SCHEMA.into(),
+            chain: Manifest {
+                schema: zdn::host::external::SCHEMA.into(),
+                request: provisioning.request.clone(),
+                trust: request.trust.clone(),
+                objects: request.objects(&team, &deployment.spec).unwrap(),
+                compiled_json: serde_json::to_string(&request.compiled).unwrap(),
+                native_inventory: inventory.pin().unwrap(),
+                options,
+                config: Pin::of(config_toml.as_bytes()),
+                config_toml,
+            },
+            provisioning: provisioning.clone(),
+            image: request.image.clone(),
+            memory_bytes: u64::from(allocation.max_node_gib) << 30,
+            cpu_millis: allocation.vcpus * 1000 - zdn::infra::HOST_CPU_RESERVE_MILLIS,
+            host_reserve_bytes: u64::from(allocation.host_reserve_gib) << 30,
+            block_interval_seconds: (node == "node-1").then_some(25),
+            production_limits: request.production_limits.clone(),
+        };
+        let bytes = runtime.bytes().unwrap();
+        manifests.insert(node.clone(), Pin::of(&bytes));
+        foundation::write_private(
+            &directory.join(format!("{node}-external-provisioning.json")),
+            &provisioning.bytes().unwrap(),
+        )
+        .unwrap();
+        foundation::write_private(
+            &directory.join(format!("{node}-external-runtime.json")),
+            &bytes,
+        )
+        .unwrap();
+    }
+    foundation::write_json(&directory.join("external-evidence.json"), &json!({
+        "schema":"zdn-external-runtime/v1","request":Pin::of(&request.bytes().unwrap()),"cohort":cohort.pin().unwrap(),
+        "inventory":inventory.pin().unwrap(),"inventoryJson":serde_json::to_string(&inventory).unwrap(),
+        "pendingIdentity":null,"manifests":manifests,"pendingUpdate":null,"activeImages":{},
+    })).unwrap();
+    f.endpoints = zdn::foundation_live::external::endpoint_file(&deployment, directory).unwrap();
+    f.endpoints
+        .save_new(&directory.join("client-endpoints.json"))
+        .unwrap();
+    fs::write(
+        f.root.path().join("endpoints.json"),
+        serde_json::to_vec(&f.endpoints).unwrap(),
+    )
+    .unwrap();
+    file.save(&deployment).unwrap();
+    (f, deployment)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn named_external_endpoints_export_and_read_use_pinned_external_gateway() {
+    let (f, deployment) = named_external_fixture();
+    let output = f
+        .command()
+        .args([
+            "endpoints",
+            "external-demo",
+            "--state-dir",
+            "state",
+            "--output",
+            "exported.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        EndpointFile::load(&f.root.path().join("exported.json")).unwrap(),
+        f.endpoints
+    );
+    assert!(f.calls().is_empty());
+    let role = deployment
+        .team
+        .deployment
+        .as_ref()
+        .unwrap()
+        .role_arn
+        .rsplit('/')
+        .next()
+        .unwrap();
+    let output = f
+        .command()
+        .args([
+            "rpc",
+            "external-demo",
+            "getblockcount",
+            "--state-dir",
+            "state",
+            "--startup-timeout-secs",
+            "10",
+        ])
+        .env("ZDN_CONNECT_MODE", "rpc-null")
+        .env("ZDN_CONNECT_ROLE", role)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.path().join("rpc-requests"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    f.assert_rpc_closed();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn named_external_endpoints_reject_unsettled_or_changed_evidence_before_cloud() {
+    use zdn::foundation::{self, DeploymentFile};
+    for case in [
+        "destroyed",
+        "pending-operation",
+        "pending-update",
+        "changed-evidence",
+        "missing-evidence",
+        "changed-runtime",
+        "missing-runtime",
+        "changed-endpoints",
+    ] {
+        let (f, mut deployment) = named_external_fixture();
+        let file =
+            DeploymentFile::open(&f.root.path().join("state"), deployment.spec.network_id).unwrap();
+        let directory = file.directory();
+        match case {
+            "destroyed" => deployment.destroyed = true,
+            "pending-operation" => deployment.unresolved_operation = Some(uuid::Uuid::new_v4()),
+            "pending-update" | "changed-evidence" => {
+                let path = directory.join("external-evidence.json");
+                let mut evidence: Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                if case == "pending-update" {
+                    evidence["pendingUpdate"] = json!(uuid::Uuid::new_v4());
+                } else {
+                    evidence["inventory"]["sha256"] = json!("ff".repeat(32));
+                }
+                foundation::write_json(&path, &evidence).unwrap();
+            }
+            "missing-evidence" => {
+                fs::remove_file(directory.join("external-evidence.json")).unwrap()
+            }
+            "changed-runtime" => {
+                fs::write(directory.join("node-1-external-runtime.json"), b"{}").unwrap()
+            }
+            "missing-runtime" => {
+                fs::remove_file(directory.join("node-1-external-runtime.json")).unwrap()
+            }
+            "changed-endpoints" => {
+                let mut endpoints = f.endpoints.clone();
+                endpoints.external.as_mut().unwrap().service_sha256 = "ff".repeat(32);
+                foundation::write_json(&directory.join("client-endpoints.json"), &endpoints)
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        file.save(&deployment).unwrap();
+        drop(file);
+        for args in [
+            vec!["endpoints", "external-demo", "--output", "rejected.json"],
+            vec!["rpc", "external-demo", "getblockcount"],
+        ] {
+            let output = f
+                .command()
+                .args(&args)
+                .args(["--state-dir", "state"])
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "accepted {case} for {args:?}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(!error.contains("Usage:"), "CLI parse failure: {error}");
+            assert!(
+                f.calls().is_empty(),
+                "cloud invoked for {case} via {args:?}"
+            );
+            assert!(!f.root.path().join("rejected.json").exists());
+        }
+    }
+}
+
+#[test]
+fn external_transport_requires_matching_gateway_and_keeps_metadata_small() {
+    for (external, method, params, mode, succeeds) in [
+        (false, "getblock", "[\"hash\",0]", "rpc-raw-large", false),
+        (true, "getblock", "[\"hash\",0]", "rpc-raw-large", true),
+        (
+            true,
+            "getrawtransaction",
+            "[\"txid\",0]",
+            "rpc-raw-large",
+            true,
+        ),
+        (true, "getblock", "[\"hash\",1]", "rpc-raw-large", false),
+        (true, "getblockcount", "[]", "rpc-raw-large", false),
+        (
+            true,
+            "getblock",
+            "[\"hash\",0]",
+            "wrong-external-service",
+            false,
+        ),
+    ] {
+        let mut f = Fixture::new();
+        if external {
+            f.select_external();
+        }
+        let output = f
+            .rpc(mode, method)
+            .args(["--params", params])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.success(),
+            succeeds,
+            "{external} {method} {params} {mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if succeeds {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                json!("ab".repeat(4 * 1024 * 1024 + 32))
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+        let requests = fs::read_to_string(f.root.path().join("rpc-requests")).unwrap_or_default();
+        assert_eq!(
+            requests.lines().count(),
+            usize::from(mode != "wrong-external-service")
+        );
+        f.assert_rpc_closed();
+    }
+}
+
+#[test]
+fn external_submission_preserves_large_bytes_and_requires_matching_gateway() {
+    let raw = "ab".repeat(4 * 1024 * 1024 + 32);
+    for (external, mode, succeeds) in [
+        (false, "ready", false),
+        (true, "ready", true),
+        (true, "wrong-external-service", false),
+    ] {
+        let mut f = Fixture::new();
+        if external {
+            f.select_external();
+        }
+        let mut command = f.submit(mode);
+        fs::write(f.root.path().join("signed-tx.hex"), &raw).unwrap();
+        let output = command.output().unwrap();
+        assert_eq!(output.status.success(), succeeds, "{external} {mode}");
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let requests = fs::read_to_string(f.root.path().join("rpc-requests")).unwrap_or_default();
+        if succeeds {
+            assert_eq!(report["outcome"], "acknowledged");
+            assert_eq!(report["txid"], "ab".repeat(32));
+            assert_eq!(requests.lines().count(), 1);
+            let request: Value = serde_json::from_str(requests.trim()).unwrap();
+            assert_eq!(request["body"]["params"], json!([raw]));
+            assert!(request["authorization"].is_null());
+        } else {
+            assert_eq!(report["outcome"], "not-dispatched");
+            assert!(requests.is_empty());
+        }
+        if !external {
+            assert!(f.calls().is_empty());
+        } else {
+            f.assert_rpc_closed();
+        }
     }
 }
 

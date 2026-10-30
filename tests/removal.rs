@@ -1382,6 +1382,7 @@ fn network_receipts_data_and_fixed_documents_are_rechecked_before_team_mutation(
                     dockerfile: "Dockerfile".into(),
                     context: ".".into(),
                     target: "runtime".into(),
+                    cargo_features: Vec::new(),
                 },
                 platform: "linux/amd64".into(),
                 required_capabilities: Default::default(),

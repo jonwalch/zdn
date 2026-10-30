@@ -13,9 +13,12 @@ use std::{
 use uuid::Uuid;
 
 pub mod export;
+#[cfg(target_os = "linux")]
+mod external;
 pub mod import;
 
 pub const API_VERSION: &str = "zdn-deployment-handoff/v1alpha1";
+pub const EXTERNAL_API_VERSION: &str = "zdn-external-deployment-handoff/v1";
 pub const MANIFEST_NAME: &str = "handoff.json";
 pub const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_ARCHIVE_BYTES: u64 = 768 * 1024 * 1024;
@@ -41,7 +44,14 @@ impl Manifest {
     )]
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.api_version == API_VERSION,
+            self.api_version
+                == if self.deployment.external.is_some()
+                    || self.deployment.external_source.is_some()
+                {
+                    EXTERNAL_API_VERSION
+                } else {
+                    API_VERSION
+                },
             "unsupported deployment handoff version"
         );
         self.binding.validate()?;
@@ -56,6 +66,12 @@ impl Manifest {
             !deployment.destroyed && deployment.cleanup.is_none(),
             "destroyed or cleanup deployments cannot be handed off"
         );
+        if deployment.external.is_some() || deployment.external_source.is_some() {
+            #[cfg(target_os = "linux")]
+            return external::validate(self);
+            #[cfg(not(target_os = "linux"))]
+            eyre::bail!("external handoff validation is unavailable on this platform");
+        }
         ensure!(
             deployment.unresolved_operation.is_none(),
             "reconcile unresolved operations before handoff"
@@ -293,6 +309,12 @@ impl Manifest {
         tracing::instrument(skip_all, name = "handoff.manifest.file_limit")
     )]
     pub fn file_limit(&self, path: &str) -> Result<u64> {
+        if self.deployment.external.is_some() || self.deployment.external_source.is_some() {
+            #[cfg(target_os = "linux")]
+            return external::file_limit(self, path);
+            #[cfg(not(target_os = "linux"))]
+            eyre::bail!("external handoff validation is unavailable on this platform");
+        }
         if self.deployment.cluster.is_none() {
             return crate::build::preparation::file_limit(path);
         }
@@ -415,6 +437,12 @@ impl Manifest {
                 devnet::hash_file(&directory.join(path), self.file_limit(path)?)? == *artifact,
                 "handoff payload integrity mismatch"
             );
+        }
+        if self.deployment.external.is_some() || self.deployment.external_source.is_some() {
+            #[cfg(target_os = "linux")]
+            return external::verify(self, directory);
+            #[cfg(not(target_os = "linux"))]
+            eyre::bail!("external handoff validation is unavailable on this platform");
         }
         if self.deployment.cluster.is_none() {
             let preparation = crate::build::preparation::Preparation::read(directory)?;

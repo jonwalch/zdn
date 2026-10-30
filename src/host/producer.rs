@@ -227,7 +227,23 @@ pub fn observe(
         node_id: spec.node_id.clone(),
         consensus_fingerprint: spec.consensus_fingerprint.clone(),
     };
-    let report = match read_status(state, &identity) {
+    observe_scheduled(
+        &identity,
+        spec.block_interval_seconds,
+        service,
+        state,
+        starting,
+    )
+}
+
+fn observe_scheduled(
+    identity: &ProducerIdentity,
+    interval: Option<u64>,
+    service: Service,
+    state: &Path,
+    starting: bool,
+) -> Result<Observation> {
+    let report = match read_status(state, identity) {
         Ok(report) => report,
         Err(error) if starting && missing(&error) => return Ok(unscheduled()),
         Err(error) => return Err(error),
@@ -236,7 +252,7 @@ pub fn observe(
     // launchReady=false qualification; there is no subprocess schema to trust.
     // Cadence incompatibility is never a startup grace condition.
     ensure!(
-        Some(report.journal.interval_secs) == spec.block_interval_seconds,
+        Some(report.journal.interval_secs) == interval,
         "controller interval differs from running service"
     );
     let owned = report.controller_locked && report.journal.owner_pid == service.pid;
@@ -260,6 +276,39 @@ pub fn observe(
     })
 }
 
+/// External runtimes retain the same service PID / exclusive journal lock /
+/// cadence / healthy-phase checks rather than interpreting an open port or an
+/// old generation receipt as active production.
+pub(in crate::host) fn observe_external(
+    spec: &super::external::runtime::Manifest,
+    node: &Directory,
+    state: &Path,
+    systemctl: &Path,
+    executor: &mut Executor,
+    cancelled: &AtomicBool,
+    starting: bool,
+) -> Result<Observation> {
+    let Some(interval) = spec.block_interval_seconds else {
+        return Ok(unscheduled());
+    };
+    let service = service(systemctl, executor, cancelled)?;
+    let running = service.active == "active" && service.sub == "running" && service.pid > 0;
+    if !running {
+        return Ok(unscheduled());
+    }
+    ensure!(
+        node.read("producer-authorized.json", 8192)? == spec.producer_authorization()?,
+        "external producer authorization differs"
+    );
+    observe_scheduled(
+        &spec.producer_identity(),
+        Some(interval),
+        service,
+        state,
+        starting,
+    )
+}
+
 /// Legacy installs neither inspect nor acquire scheduling by upgrading.
 #[cfg_attr(
     feature = "profiling",
@@ -272,11 +321,22 @@ pub fn require_stopped(
     cancelled: &AtomicBool,
 ) -> Result<()> {
     if spec.block_interval_seconds.is_some() {
-        let service = service(systemctl, executor, cancelled)?;
-        ensure!(
-            matches!(service.active.as_str(), "inactive" | "failed") && service.pid == 0,
-            "block controller must stop before node bootstrap"
-        );
+        require_service_stopped(systemctl, executor, cancelled)?;
     }
+    Ok(())
+}
+
+/// Same stopped-service fence for the explicit external runtime. This never
+/// grants producer authorization or alters its durable generation journal.
+pub(in crate::host) fn require_service_stopped(
+    systemctl: &Path,
+    executor: &mut Executor,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let service = service(systemctl, executor, cancelled)?;
+    ensure!(
+        matches!(service.active.as_str(), "inactive" | "failed") && service.pid == 0,
+        "block controller must stop before node bootstrap"
+    );
     Ok(())
 }

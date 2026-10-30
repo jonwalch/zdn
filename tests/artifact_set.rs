@@ -299,6 +299,7 @@ fn source_build_contract_is_bound_to_image() {
             dockerfile: "Dockerfile".into(),
             context: ".".into(),
             target: "runtime".into(),
+            cargo_features: Vec::new(),
         },
     });
     fs::write(

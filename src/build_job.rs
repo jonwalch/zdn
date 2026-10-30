@@ -886,8 +886,8 @@ fn validate_result(
         responses.next().unwrap()?,
         image::MAX_CONFIG_BYTES,
     )?;
-    let verified = image::validate_manifest_bytes(&result.image, &manifest)?;
-    image::validate_config_bytes(&result.image, &verified, &config)?;
+    let verified = contract.validate_manifest_bytes(&result.image, &manifest)?;
+    contract.validate_config_bytes(&result.image, &verified, &config)?;
     // Observe the immutable digest independently in ECR, not just in job output.
     let observed = api.call("ecr", "batch-get-image", json!({"registryId":infra.account_id,"repositoryName":infra.repository,"imageIds":[{"imageDigest":result.image.manifest_digest()?}],"acceptedMediaTypes":["application/vnd.oci.image.manifest.v1+json","application/vnd.docker.distribution.manifest.v2+json"]}), &[])?;
     ensure!(
@@ -1223,6 +1223,7 @@ mod tests {
                 dockerfile: "docker/Dockerfile".into(),
                 context: ".".into(),
                 target: "runtime".into(),
+                cargo_features: Vec::new(),
             },
             platform: "linux/amd64".into(),
             required_capabilities: Default::default(),

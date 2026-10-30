@@ -31,6 +31,9 @@ pub struct Config {
     pub api_version: String,
     pub name: String,
     pub profile: String,
+    /// Absent keeps the original ordinary serialization and identity unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<ChainSelection>,
     #[serde(default)]
     pub deployment: Deployment,
     pub node: Node,
@@ -40,6 +43,46 @@ pub struct Config {
     pub services: Services,
     #[serde(default)]
     pub access: Access,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ChainSelection {
+    Ordinary,
+    External {
+        #[serde(rename = "packageSha256")]
+        package_sha256: String,
+        #[serde(rename = "adapterSelectionSha256")]
+        adapter_selection_sha256: String,
+        #[serde(
+            default,
+            rename = "productionLimits",
+            skip_serializing_if = "Option::is_none"
+        )]
+        production_limits: Option<ExternalProductionLimits>,
+    },
+}
+
+/// Immutable first-launch ceilings, not a budget renewed by each invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExternalProductionLimits {
+    pub max_height: u32,
+    pub lifetime_seconds: u32,
+}
+
+impl ExternalProductionLimits {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.max_height > 0,
+            "external production height must be positive"
+        );
+        ensure!(
+            (1..=3600).contains(&self.lifetime_seconds),
+            "external production lifetime must be 1 to 3600 seconds"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,6 +190,8 @@ pub struct Build {
     pub dockerfile: PathBuf,
     pub context: PathBuf,
     pub target: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cargo_features: Vec<String>,
 }
 impl Default for Build {
     fn default() -> Self {
@@ -157,6 +202,7 @@ impl Default for Build {
             dockerfile: "docker/Dockerfile".into(),
             context: ".".into(),
             target: "runtime".into(),
+            cargo_features: Vec::new(),
         }
     }
 }
@@ -292,6 +338,7 @@ impl Config {
             api_version: API_VERSION.into(),
             name,
             profile,
+            chain: None,
             deployment: Deployment::default(),
             node: Node {
                 adapter: "zakura".into(),
@@ -331,6 +378,25 @@ impl Config {
         tracing::instrument(skip_all, name = "config.validate")
     )]
     pub fn validate(&self) -> Result<()> {
+        if let Some(ChainSelection::External {
+            package_sha256,
+            adapter_selection_sha256,
+            production_limits,
+        }) = &self.chain
+        {
+            if let Some(limits) = production_limits {
+                limits.validate()?;
+            }
+            for pin in [package_sha256, adapter_selection_sha256] {
+                ensure!(
+                    pin.len() == 64
+                        && pin
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                    "external chain requires canonical package and adapter-selection SHA256 pins"
+                );
+            }
+        }
         ensure!(
             self.api_version == API_VERSION,
             "unsupported apiVersion {}; expected {API_VERSION}",
@@ -374,6 +440,7 @@ impl Config {
                 build.recipe == "repository" && build.target == "runtime",
                 "use the repository build recipe and runtime target"
             );
+            crate::image::validate_cargo_features(&build.cargo_features)?;
             ensure!(
                 !build.dockerfile.as_os_str().is_empty() && !build.context.as_os_str().is_empty(),
                 "Dockerfile and build context cannot be empty"
@@ -437,6 +504,14 @@ impl Config {
         Ok(())
     }
 
+    /// Admission for the original in-process chain path. External selections
+    /// use their explicit package/runtime APIs, never these consensus defaults.
+    pub fn require_ordinary_chain(&self) -> Result<()> {
+        ensure!(!matches!(self.chain,Some(ChainSelection::External {..})),
+            "external chain requires the versioned external package/runtime path; ordinary chain execution is forbidden");
+        Ok(())
+    }
+
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "config.resolved_upgrades")
@@ -470,6 +545,15 @@ impl Config {
             previous = height;
         }
         Ok(resolved)
+    }
+
+    pub fn external_production_limits(&self) -> Option<&ExternalProductionLimits> {
+        match &self.chain {
+            Some(ChainSelection::External {
+                production_limits, ..
+            }) => production_limits.as_ref(),
+            _ => None,
+        }
     }
 
     pub fn fingerprint(&self) -> Result<String> {

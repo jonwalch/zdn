@@ -439,15 +439,30 @@ fn saved(store: StoreArgs, profile: &str, selector: &str) -> Result<(Deployment,
         "saved deployment belongs to different team settings"
     );
     deployment.spec.aws_profile = local.aws_profile;
-    let expected = EndpointFile::from_deployment(&deployment)?;
-    let file = EndpointFile::load(
-        &store
-            .root()
-            .join("foundation")
-            .join(binding.network_id.to_string())
-            .join("client-endpoints.json"),
-    )
-    .context("private client service installation has not completed; finish devnet up first")?;
+    let directory = store
+        .root()
+        .join("foundation")
+        .join(binding.network_id.to_string());
+    let expected = if deployment.external.is_some() {
+        ensure!(
+            !deployment.destroyed
+                && deployment.stack_initialized
+                && deployment.outputs.is_some()
+                && deployment.unresolved_operation.is_none(),
+            "external connections require a settled provisioned deployment"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            zdn::foundation_live::external::update::require_settled(&deployment, &directory)?;
+            zdn::foundation_live::external::endpoint_file(&deployment, &directory)?
+        }
+        #[cfg(not(target_os = "linux"))]
+        bail!("named external connections require Linux; use an exported endpoint file")
+    } else {
+        EndpointFile::from_deployment(&deployment)?
+    };
+    let file = EndpointFile::load(&directory.join("client-endpoints.json"))
+        .context("private client service installation has not completed; finish devnet up first")?;
     ensure!(
         file == expected,
         "saved private endpoint identities differ from the deployment"
@@ -698,7 +713,14 @@ fn rpc_result(
         |local| {
             let address = connection.verify(local)?;
             connection.report_ready(format, "rpc")?;
-            read_rpc(address, &request)
+            read_rpc(
+                address,
+                &request,
+                connection
+                    .endpoints
+                    .body_class()
+                    .response(&args.method, &params),
+            )
         },
     )
 }
@@ -731,6 +753,8 @@ pub fn submit(args: SubmitArgs, format: cli_output::Format) -> ExitCode {
     };
     #[cfg(unix)]
     let operation = (|| -> Result<()> {
+        let (_, endpoints) = args.connection.selected()?;
+        let request_limit = endpoints.body_class().request("sendrawtransaction");
         ensure!(
             fs::metadata(&args.transaction_file)
                 .context("cannot inspect transaction file")?
@@ -740,11 +764,11 @@ pub fn submit(args: SubmitArgs, format: cli_output::Format) -> ExitCode {
         let mut bytes = Vec::new();
         fs::File::open(&args.transaction_file)
             .context("cannot open transaction file")?
-            .take(MAX_RPC_BYTES as u64 + 1)
+            .take(request_limit as u64 + 1)
             .read_to_end(&mut bytes)
             .context("cannot read transaction file")?;
         ensure!(
-            bytes.len() <= MAX_RPC_BYTES,
+            bytes.len() <= request_limit,
             "transaction file exceeds its size limit"
         );
         let transaction = std::str::from_utf8(&bytes)
@@ -763,10 +787,10 @@ pub fn submit(args: SubmitArgs, format: cli_output::Format) -> ExitCode {
             "params":[transaction.to_ascii_lowercase()]
         }))?;
         ensure!(
-            request.len() <= MAX_RPC_BYTES,
+            request.len() <= request_limit,
             "submission request exceeds its size limit"
         );
-        let connection = prepare_connection(args.connection, None)?;
+        let connection = prepare_connection(args.connection, Some(&endpoints))?;
         report.network_id = Some(connection.endpoints.network_id);
         report.consensus_fingerprint = Some(connection.endpoints.consensus_fingerprint.clone());
         let operation = zdn::connections::once(
@@ -873,8 +897,8 @@ impl std::error::Error for WalletRpcError {}
     feature = "profiling",
     tracing::instrument(skip_all, name = "connect_cli.read_rpc")
 )]
-fn read_rpc(address: std::net::SocketAddr, request: &str) -> Result<Value> {
-    match request_rpc(address, request, "zdn-read")? {
+fn read_rpc(address: std::net::SocketAddr, request: &str, response_limit: usize) -> Result<Value> {
+    match request_rpc(address, request, "zdn-read", response_limit)? {
         (200, RpcReply::Result(value)) => Ok(value),
         (200, RpcReply::Error { code, .. }) => Err(eyre::Report::new(WalletRpcError::ReadRejected)
             .wrap_err(format!(
@@ -889,7 +913,7 @@ fn read_rpc(address: std::net::SocketAddr, request: &str) -> Result<Value> {
     tracing::instrument(skip_all, name = "connect_cli.submit_rpc")
 )]
 fn submit_rpc(address: std::net::SocketAddr, request: &str) -> Result<SubmissionOutcome> {
-    match request_rpc(address, request, "zdn-submit")? {
+    match request_rpc(address, request, "zdn-submit", MAX_RPC_BYTES)? {
         (200, RpcReply::Result(Value::String(txid)))
             if txid.len() == 64 && txid.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
         {
@@ -919,7 +943,12 @@ fn submit_rpc(address: std::net::SocketAddr, request: &str) -> Result<Submission
     feature = "profiling",
     tracing::instrument(skip_all, name = "connect_cli.request_rpc")
 )]
-fn request_rpc(address: std::net::SocketAddr, request: &str, id: &str) -> Result<(u16, RpcReply)> {
+fn request_rpc(
+    address: std::net::SocketAddr,
+    request: &str,
+    id: &str,
+    response_limit: usize,
+) -> Result<(u16, RpcReply)> {
     let response = match ureq::AgentBuilder::new()
         .try_proxy_from_env(false)
         .redirects(0)
@@ -944,14 +973,14 @@ fn request_rpc(address: std::net::SocketAddr, request: &str, id: &str) -> Result
     let mut bytes = Vec::new();
     response
         .into_reader()
-        .take(MAX_RPC_BYTES as u64 + 1)
+        .take(response_limit as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| {
             eyre::Report::new(WalletRpcError::Transport)
                 .wrap_err("private RPC response could not be read")
         })?;
     ensure!(
-        bytes.len() <= MAX_RPC_BYTES,
+        bytes.len() <= response_limit,
         "private RPC response exceeds its size limit"
     );
     let mut answer: Value = serde_json::from_slice(&bytes)
@@ -1384,7 +1413,7 @@ impl WalletRpc<'_> {
         let request = serde_json::to_string(
             &json!({"jsonrpc":"2.0","id":"zdn-read","method":method,"params":params}),
         )?;
-        let result = read_rpc(self.address, &request).map_err(|error| {
+        let result = read_rpc(self.address, &request, MAX_RPC_BYTES).map_err(|error| {
             if error.downcast_ref::<WalletRpcError>().is_some() {
                 error
             } else {
@@ -1409,7 +1438,7 @@ impl WalletRpc<'_> {
         let request = serde_json::to_string(
             &json!({"jsonrpc":"2.0","id":"zdn-read","method":"getrawtransaction","params":[txid,1]}),
         )?;
-        let result = match request_rpc(self.address, &request, "zdn-read")? {
+        let result = match request_rpc(self.address, &request, "zdn-read", MAX_RPC_BYTES)? {
             (200, RpcReply::Result(value)) => Some(value),
             (200, RpcReply::Error { code: -5, data })
                 if data.as_ref().is_none_or(Value::is_null) =>
@@ -1638,15 +1667,9 @@ fn request_json(address: std::net::SocketAddr, path: &str, body: Option<Value>) 
 )]
 fn check_service_identity(endpoints: &EndpointFile, address: std::net::SocketAddr) -> Result<()> {
     let value = request_json(address, "health", None)?;
-    ensure!(
-        value["apiVersion"] == zdn::client_gateway::OBSERVATION_API_VERSION
-            && value["deploymentId"] == endpoints.network_id.to_string()
-            && value["nodeId"] == "node-1"
-            && value["consensusFingerprint"] == endpoints.consensus_fingerprint
-            && value["status"] == "ready",
-        "private RPC gateway does not match the selected devnet or is not ready"
-    );
-    Ok(())
+    endpoints
+        .validate_gateway_observation(&value)
+        .wrap_err("private RPC gateway does not match the selected devnet or is not ready")
 }
 
 #[derive(Args)]

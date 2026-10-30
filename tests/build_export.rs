@@ -56,6 +56,7 @@ fn contract() -> BuildContract {
             dockerfile: "docker/Dockerfile".into(),
             context: ".".into(),
             target: "runtime".into(),
+            cargo_features: Vec::new(),
         },
         platform: "linux/amd64".into(),
         required_capabilities: Default::default(),
@@ -353,4 +354,73 @@ fn invalid_inputs_never_publish() {
     let root = tempfile::tempdir().unwrap();
     assert!(run(root.path(), &bad_contract, REPOSITORY, &response, &config).is_err());
     assert!(!root.path().join("output").exists());
+}
+
+#[test]
+fn ordinary_empty_contract_keeps_legacy_fingerprint_and_recipe_bytes() {
+    let contract = contract();
+    // Independently hashed v1alpha1 fixture, before feature-aware fields existed.
+    assert_eq!(
+        contract.fingerprint().unwrap(),
+        "8417919c590115968e0cbd7c0aeb50b70d3b5138c264345413a4983c286c7928"
+    );
+    assert_eq!(
+        serde_json::to_string(&contract.recipe).unwrap(),
+        r#"{"dockerfile":"docker/Dockerfile","context":".","target":"runtime"}"#
+    );
+    let value = serde_json::to_value(&contract).unwrap();
+    assert!(value["requiredCapabilities"]
+        .get("buildRequirements")
+        .is_none());
+    assert_eq!(
+        serde_json::from_value::<BuildContract>(value).unwrap(),
+        contract
+    );
+}
+
+#[test]
+fn feature_bound_export_requires_exact_observed_configuration() {
+    use zdn::image::ImageBuildRequirements;
+    let requirements = ImageBuildRequirements::new(
+        &["feature-a".into(), "feature-b".into()],
+        &[
+            "native-managed-identity-v1".into(),
+            "slh-dsa-b128s-v2".into(),
+        ],
+    )
+    .unwrap();
+    let mut contract = contract();
+    contract.require_external(&requirements).unwrap();
+    for observed in [
+        None,
+        Some(""),
+        Some("feature-a"),
+        Some("feature-b,feature-a"),
+        Some("feature-a,feature-b"),
+        Some("feature-a,feature-b,extra"),
+    ] {
+        let mut config: Value = serde_json::from_slice(&config()).unwrap();
+        config["config"]["Env"] = match observed {
+            Some(features) => json!([format!("FEATURES={features}")]),
+            None => json!([]),
+        };
+        let bytes = serde_json::to_vec(&config).unwrap();
+        let (response, _) = registry(&bytes);
+        let root = tempfile::tempdir().unwrap();
+        let result = run(root.path(), &contract, REPOSITORY, &response, &bytes);
+        if observed == Some("feature-a,feature-b") {
+            result.unwrap();
+            let result: zdn::build_job::BuildResult =
+                serde_json::from_slice(&fs::read(root.path().join("output/result.json")).unwrap())
+                    .unwrap();
+            assert_eq!(result.contract_sha256, contract.fingerprint().unwrap());
+            requirements.validate_image(&result.image).unwrap();
+            assert_eq!(result.image.api_version, image::FEATURE_API_VERSION);
+            assert!(result.image.validate().is_err());
+            contract.validate_image(&result.image).unwrap();
+        } else {
+            assert!(result.is_err(), "{observed:?}");
+            assert!(!root.path().join("output").exists());
+        }
+    }
 }

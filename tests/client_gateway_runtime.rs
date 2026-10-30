@@ -38,6 +38,8 @@ struct Fixture {
     calls: mpsc::Receiver<(Value, String)>,
     gateway: Option<thread::JoinHandle<eyre::Result<()>>>,
     node: Option<thread::JoinHandle<()>>,
+    upstream_addr: SocketAddr,
+    node_listener: mpsc::Sender<(Option<TcpListener>, mpsc::Sender<()>)>,
 }
 fn put(path: &std::path::Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
@@ -48,6 +50,9 @@ fn secret(letter: char) -> String {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_body_class(zdn::rpc_limits::BodyClass::Default)
+    }
+    fn with_body_class(body_class: zdn::rpc_limits::BodyClass) -> Self {
         let root = tempfile::tempdir().unwrap();
         for dir in ["etc", "volume", "volume/rpc"] {
             fs::create_dir(root.path().join(dir)).unwrap();
@@ -69,6 +74,7 @@ impl Fixture {
         let addr = listener.local_addr().unwrap();
         let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
         upstream.set_nonblocking(true).unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
         let uid = root.path().metadata().unwrap().uid();
         let config = Config {
             anchor: File::open(root.path()).unwrap(),
@@ -90,9 +96,21 @@ impl Fixture {
         let (tx, calls) = mpsc::channel();
         let node_stop = stop.clone();
         let node_mode = mode.clone();
+        let (node_listener, listener_changes) =
+            mpsc::channel::<(Option<TcpListener>, mpsc::Sender<()>)>();
         let node = thread::spawn(move || {
+            let mut upstream = Some(upstream);
             thread::scope(|scope| {
                 while !node_stop.load(Ordering::Acquire) {
+                    if let Ok((replacement, acknowledged)) = listener_changes.try_recv() {
+                        // Drop the old listening socket before acknowledging the outage.
+                        upstream = replacement;
+                        acknowledged.send(()).unwrap();
+                    }
+                    let Some(upstream) = upstream.as_ref() else {
+                        thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
                     match upstream.accept() {
                         Ok((mut stream, _)) => {
                             let tx = tx.clone();
@@ -159,7 +177,14 @@ impl Fixture {
                 }
             })
         });
-        let gateway = thread::spawn(move || serve(listener, config, &gateway_stop));
+        let gateway = thread::spawn(move || {
+            zdn::client_gateway::runtime::serve_with_body_class(
+                listener,
+                config,
+                &gateway_stop,
+                body_class,
+            )
+        });
         Self {
             root,
             addr,
@@ -168,10 +193,21 @@ impl Fixture {
             calls,
             gateway: Some(gateway),
             node: Some(node),
+            upstream_addr,
+            node_listener,
         }
     }
     fn mode(&self, mode: Mode) {
         *self.mode.lock().unwrap() = mode;
+    }
+    fn replace_upstream_listener(&self, listener: Option<TcpListener>) {
+        if let Some(listener) = &listener {
+            assert_eq!(listener.local_addr().unwrap(), self.upstream_addr);
+            listener.set_nonblocking(true).unwrap();
+        }
+        let (acknowledged, received) = mpsc::channel();
+        self.node_listener.send((listener, acknowledged)).unwrap();
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
     }
     fn raw(&self, bytes: &[u8]) -> (u16, Value) {
         let mut stream = TcpStream::connect(self.addr).unwrap();
@@ -214,6 +250,52 @@ impl Drop for Fixture {
 }
 fn request(body: &str, extra: &str) -> String {
     format!("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}\r\n{body}",body.len())
+}
+
+#[test]
+fn explicit_large_hex_class_preserves_metadata_and_administrator_limits() {
+    let f = Fixture::with_body_class(zdn::rpc_limits::BodyClass::LargeHexV1);
+    let hex = "ab".repeat(4 * 1024 * 1024 + 1);
+    let reply = json!({"id":"client-29","result":hex}).to_string();
+    f.mode(Mode::Reply(200, reply.clone(), String::new()));
+    let request = r#"{"method":"getblock","params":["hash",0],"id":"client-29"}"#;
+    let (status, answer) = f.rpc(request);
+    assert_eq!(status, 200);
+    assert_eq!(answer["result"].as_str().unwrap().len(), hex.len());
+    f.received();
+    // The same oversized body is not accepted for metadata or verbose blocks.
+    assert_eq!(
+        f.rpc(r#"{"method":"getblockchaininfo","params":[],"id":"client-29"}"#)
+            .0,
+        502
+    );
+    f.received();
+    assert_eq!(
+        f.rpc(r#"{"method":"getblock","params":["hash",1],"id":"client-29"}"#)
+            .0,
+        502
+    );
+    f.received();
+    // Finite framing ceiling is enforced before allocating/reading that body.
+    assert_eq!(f.raw(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 40100001\r\n\r\n").0,413);
+    assert!(f.calls.try_recv().is_err());
+    for method in [
+        "getchainrules",
+        "submitblock",
+        "generate",
+        "inspectchainblock",
+    ] {
+        assert_eq!(
+            f.rpc(&json!({"method":method,"params":[],"id":"client-29"}).to_string())
+                .0,
+            403
+        );
+        assert!(f.calls.try_recv().is_err());
+    }
+    let ordinary = Fixture::new();
+    ordinary.mode(Mode::Reply(200, reply, String::new()));
+    assert_eq!(ordinary.rpc(request).0, 502);
+    ordinary.received();
 }
 
 #[test]
@@ -541,6 +623,127 @@ fn refused_upstream_is_not_dispatched_and_health_requires_node_authentication() 
     assert_eq!(answer["id"], "client-29");
     assert_eq!(answer["error"]["data"]["outcome"], "not-dispatched");
     assert!(f.calls.try_recv().is_err());
+}
+
+#[test]
+fn continuous_gateway_recovers_same_upstream_address_with_rotated_cookie_without_replay() {
+    let f = Fixture::new();
+    let gateway_addr = f.addr;
+    let gateway_thread = f.gateway.as_ref().unwrap().thread().id();
+    let assert_continuous = || {
+        let gateway = f.gateway.as_ref().unwrap();
+        assert_eq!(gateway.thread().id(), gateway_thread);
+        assert!(!gateway.is_finished());
+        assert!(!f.stop.load(Ordering::Acquire));
+        assert_eq!(f.addr, gateway_addr);
+        assert_eq!(
+            TcpListener::bind(gateway_addr).unwrap_err().kind(),
+            std::io::ErrorKind::AddrInUse
+        );
+    };
+    let assert_received = |expected: Value, credential: char| {
+        let (call, headers) = f.received();
+        assert_eq!(call, expected);
+        let authorization: Vec<_> = headers
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+            .collect();
+        assert_eq!(
+            authorization,
+            vec![format!(
+                "Authorization: Basic {}",
+                STANDARD.encode(secret(credential))
+            )]
+        );
+    };
+    let health_request =
+        json!({"jsonrpc":"2.0","method":"getblockchaininfo","params":[],"id":"zdn-health"});
+    let health_wire = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    let health_reply = r#"{"id":"zdn-health","result":{"blocks":12}}"#;
+    let assert_unavailable = || {
+        assert_eq!(f.raw(health_wire).0, 503);
+        let (status, reply) = f.rpc(SUBMIT);
+        assert_eq!(status, 502);
+        assert_eq!(reply["id"], "client-29");
+        assert_eq!(reply["error"]["data"]["outcome"], "not-dispatched");
+        assert!(f.calls.try_recv().is_err());
+        assert_continuous();
+    };
+
+    f.mode(Mode::Reply(200, health_reply.into(), String::new()));
+    assert_eq!(f.raw(health_wire).0, 200);
+    assert_received(health_request.clone(), 'A');
+    assert_continuous();
+
+    // This submission reached the old node, but its reply was lost. It must
+    // never be retried, including after the upstream and credentials recover.
+    f.mode(Mode::Drop);
+    let (status, reply) = f.rpc(SUBMIT);
+    assert_eq!(status, 502);
+    assert_eq!(reply["error"]["data"]["outcome"], "outcome-unknown");
+    assert_received(
+        json!({"jsonrpc":"2.0","method":"sendrawtransaction","params":["01ab"],"id":"client-29"}),
+        'A',
+    );
+    f.replace_upstream_listener(None);
+    assert_eq!(
+        TcpStream::connect_timeout(&f.upstream_addr, Duration::from_secs(1))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::ConnectionRefused
+    );
+    // A valid old cookie cannot make a genuinely closed upstream healthy.
+    assert_unavailable();
+    let cookie = f.root.path().join("volume/rpc/.cookie");
+    fs::remove_file(&cookie).unwrap();
+    assert_unavailable();
+
+    let upstream = TcpListener::bind(f.upstream_addr).unwrap();
+    assert_eq!(upstream.local_addr().unwrap(), f.upstream_addr);
+    f.mode(Mode::Reply(200, health_reply.into(), String::new()));
+    f.replace_upstream_listener(Some(upstream));
+    // Even with a live upstream, neither missing nor unsafe replacement
+    // credentials may fall back to the previously successful cookie.
+    assert_unavailable();
+    let replacement = f.root.path().join("volume/rpc/replacement");
+    put(&replacement, secret('B').as_bytes());
+    fs::set_permissions(&replacement, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::rename(&replacement, &cookie).unwrap();
+    assert_unavailable();
+    let unsafe_inode = cookie.metadata().unwrap().ino();
+    put(&replacement, secret('B').as_bytes());
+    fs::rename(&replacement, &cookie).unwrap();
+    assert_ne!(cookie.metadata().unwrap().ino(), unsafe_inode);
+
+    assert_eq!(f.raw(health_wire).0, 200);
+    assert_received(health_request, 'B');
+    f.mode(Mode::Reply(
+        200,
+        r#"{"id":"client-29","result":{"blocks":27,"hash":"a1B2"}}"#.into(),
+        String::new(),
+    ));
+    assert_eq!(f.rpc(CALL).0, 200);
+    assert_received(
+        json!({"jsonrpc":"2.0","method":"getblock","params":["aBc",17,{"height":9}],"id":"client-29"}),
+        'B',
+    );
+    // Only this explicitly new submission may reach the recovered upstream.
+    let submission = json!({"jsonrpc":"2.0","method":"sendrawtransaction","params":["02cd"],"id":"after-restart"});
+    let txid = "ab".repeat(32);
+    f.mode(Mode::Reply(
+        200,
+        json!({"id":"after-restart","result":txid}).to_string(),
+        String::new(),
+    ));
+    let (status, reply) = f.rpc(&submission.to_string());
+    assert_eq!(status, 200);
+    assert_eq!(reply["result"], txid);
+    assert_received(submission, 'B');
+    assert_eq!(
+        f.calls.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    );
+    assert_continuous();
 }
 
 #[test]

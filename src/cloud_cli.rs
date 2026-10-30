@@ -189,6 +189,36 @@ pub struct ExistingArgs {
     profile: String,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Args)]
+pub struct ControlArgs {
+    #[command(flatten)]
+    existing: ExistingArgs,
+    #[command(flatten)]
+    managed: ManagedArgs,
+    /// Exactly one saved external node; never an implicit all-node action.
+    #[arg(long, required_unless_present = "resume", conflicts_with = "resume")]
+    node: Option<String>,
+    /// Typed public action JSON, frozen once. Resume never reopens this file.
+    #[arg(long, required_unless_present = "resume", conflicts_with = "resume")]
+    action: Option<PathBuf>,
+    /// Resume only this saved control UUID; no new node/action overrides.
+    #[arg(long, requires = "reconcile")]
+    resume: Option<Uuid>,
+    /// Observe the saved command before considering dispatch; never replay an unknown mutation.
+    #[arg(long, requires = "resume")]
+    reconcile: bool,
+    /// Freeze/inspect local inputs only: no credentials, lease, SSM or AWS.
+    #[arg(long, conflicts_with = "yes")]
+    prepare_only: bool,
+    /// Authorize lease and SSM effects for this fixed action, not infrastructure changes.
+    #[arg(long)]
+    yes: bool,
+    /// Exact observed expired lease ETag; previous controller must be quiescent.
+    #[arg(long, requires = "reconcile", conflicts_with = "prepare_only")]
+    recover_lease_etag: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub enum FoundationCommand {
     /// Save a local foundation request and print its YAML. Makes no AWS calls.
@@ -237,8 +267,29 @@ pub struct NodeLaunchArgs {
     #[command(flatten)]
     launch: LaunchArgs,
     /// Saved network ID/prefix/label (up only); rejects all explicit launch-input overrides. Not a restore for destroyed disks.
-    #[arg(long, conflicts_with_all = ["config", "ami_id", "availability_zone", "package", "package_sha256", "manifest", "bundle", "image_record", "image_manifest", "image_config", "lightwallet_image_record", "lightwallet_image_manifest", "lightwallet_image_config", "host_helper", "reward_address"])]
+    #[arg(long, conflicts_with_all = ["config", "ami_id", "availability_zone", "package", "package_sha256", "manifest", "bundle", "image_record", "image_manifest", "image_config", "lightwallet_image_record", "lightwallet_image_manifest", "lightwallet_image_config", "host_helper", "reward_address", "external_request", "external_request_sha256", "external_directory", "external_native_port", "external_public_directory", "external_trust", "external_build_helper"])]
     saved: Option<String>,
+    /// Linux external launch: immutable request produced by external stage. Trust remains the explicit config pins.
+    #[arg(long, requires_all = ["external_request_sha256", "external_directory", "reward_address"], conflicts_with_all = ["package", "manifest", "bundle", "image_record", "lightwallet_image_record", "host_helper"])]
+    external_request: Option<PathBuf>,
+    /// Independently supplied SHA256 of the canonical external request bytes.
+    #[arg(long, requires = "external_request")]
+    external_request_sha256: Option<String>,
+    /// Exact fixed-slot external artifact directory; never searched on PATH.
+    #[arg(long, requires = "external_request")]
+    external_directory: Option<PathBuf>,
+    /// First external source build: signing-free fixed public package directory, before any image exists.
+    #[arg(long, requires_all = ["external_trust", "external_build_helper", "host_helper", "reward_address"], conflicts_with = "external_request")]
+    external_public_directory: Option<PathBuf>,
+    /// Explicit public package/executable/selection trust JSON; must match config pins.
+    #[arg(long, requires = "external_public_directory")]
+    external_trust: Option<PathBuf>,
+    /// Explicit pinned Linux native CodeBuild exporter for the first external image.
+    #[arg(long, requires = "external_public_directory")]
+    external_build_helper: Option<PathBuf>,
+    /// Explicit external cohort UDP port (default 18233); immutable after first save.
+    #[arg(long)]
+    external_native_port: Option<u16>,
     /// Compatibility flag: fresh deployments always use the pinned native host helper.
     #[arg(long, conflicts_with = "saved")]
     native_runtime: bool,
@@ -285,6 +336,9 @@ pub struct NodeLaunchArgs {
 
 #[derive(Subcommand)]
 pub enum DevnetCommand {
+    /// Prepare or execute one bounded external-node control through saved ZDN authority.
+    #[cfg(target_os = "linux")]
+    Control(ControlArgs),
     /// Export or explicitly attach a validated offline controller handoff.
     Handoff {
         #[command(subcommand)]
@@ -427,6 +481,68 @@ pub struct UpdateArgs {
     yes: bool,
 }
 
+#[cfg(target_os = "linux")]
+pub fn devnet_control(
+    args: ControlArgs,
+    output: &mut cli_output::OperationOutput,
+) -> Result<serde_json::Value> {
+    use foundation_live::external::qualification as controller;
+    ensure!(
+        args.prepare_only || args.yes,
+        "control requires --prepare-only or explicit --yes for AWS lease/SSM effects"
+    );
+    let action = args
+        .action
+        .as_ref()
+        .map(|path| -> Result<_> {
+            Ok(zdn::public_chain_adapter::contract::parse::<
+                zdn::host::external::runtime::qualification::Action,
+            >(&zdn::devnet::read_bounded(path, 8192)?)?)
+        })
+        .transpose()?;
+    let (store, binding, file, mut deployment) = existing(args.existing)?;
+    output.network_id = Some(binding.network_id);
+    let intent = match args.resume {
+        Some(id) => controller::load(&deployment, file.directory(), id)?,
+        None => controller::prepare(
+            &deployment,
+            file.directory(),
+            args.node.as_deref().context("missing external node")?,
+            action.context("missing external action")?,
+        )?,
+    };
+    let id = intent.request.id;
+    let pin = zdn::public_chain_adapter::contract::Pin::of(&intent.request.bytes()?);
+    if args.prepare_only {
+        return Ok(
+            json!({"controlId":id,"networkId":binding.network_id,"nodeId":intent.node_id,"request":pin,"runtime":intent.request.runtime,"intent":intent,"dispatched":false}),
+        );
+    }
+    let cancelled = cancellation()?;
+    let output = std::cell::RefCell::new(output);
+    let mut backend = LiveBackend::new(
+        &deployment,
+        file.directory(),
+        &data_path(args.managed.managed_dir, "tools")?,
+        cancelled,
+        args.recover_lease_etag,
+    )?;
+    backend.observe_commands(|command| output.borrow_mut().observe_command(command));
+    let observation = controller::execute(
+        &store,
+        &file,
+        &binding,
+        &mut deployment,
+        &mut backend,
+        id,
+        args.reconcile,
+        &mut |receipt, phase| output.borrow_mut().observe(receipt, phase),
+    )?;
+    Ok(
+        json!({"controlId":id,"networkId":binding.network_id,"nodeId":intent.node_id,"request":pin,"observation":observation,"paymentQualification":"pending","launchReady":false}),
+    )
+}
+
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(skip_all, name = "cloud_cli.devnet_update")
@@ -448,6 +564,20 @@ pub fn devnet_update(
         args.resume.is_some() || !args.nodes.is_empty(),
         "select at least one explicit --node"
     );
+    let (selection_store, selection_binding, _) = existing_selection(ExistingArgs {
+        selector: args.existing.selector.clone(),
+        store: args.existing.store.clone(),
+        profile: args.existing.profile.clone(),
+    })?;
+    if DeploymentFile::read_snapshot(selection_store.root(), selection_binding.network_id)?
+        .external
+        .is_some()
+    {
+        #[cfg(target_os = "linux")]
+        return external_devnet_update(args, output);
+        #[cfg(not(target_os = "linux"))]
+        eyre::bail!("external image updates require Linux");
+    }
     // Validate and freeze caller inputs before saving a pending update. A bad
     // image must not strand the deployment behind an unresumable intent.
     let source_config = args
@@ -455,6 +585,9 @@ pub fn devnet_update(
         .as_deref()
         .map(Config::load)
         .transpose()?;
+    if let Some(config) = &source_config {
+        config.require_ordinary_chain()?;
+    }
     let pinned = if let Some(path) = &args.image_record {
         let record = zdn::devnet::read_bounded(path, zdn::image::MAX_RECORD_BYTES as u64)?;
         let manifest = zdn::devnet::read_bounded(
@@ -751,6 +884,97 @@ pub fn devnet_update(
     )
 }
 
+#[cfg(target_os = "linux")]
+fn external_devnet_update(
+    args: UpdateArgs,
+    output: &mut cli_output::OperationOutput,
+) -> Result<serde_json::Value> {
+    use foundation_live::external::update;
+    let (store, binding, file, mut deployment) = existing(args.existing)?;
+    deployment.require_native_execution()?;
+    output.network_id = Some(binding.network_id);
+    ensure!(
+        !deployment.destroyed,
+        "cannot update a destroyed external deployment"
+    );
+    let cancelled = cancellation()?;
+    let id = if let Some(id) = args.resume {
+        ensure!(
+            args.reconcile,
+            "external update resume requires --reconcile"
+        );
+        id
+    } else {
+        ensure!(
+            deployment.unresolved_operation.is_none(),
+            "reconcile the existing external operation first"
+        );
+        if let Some(previous) = deployment.last_operation {
+            ensure!(
+                store
+                    .operation(previous)?
+                    .phases
+                    .iter()
+                    .all(|phase| matches!(phase.status, zdn::state::PhaseStatus::Succeeded { .. })),
+                "reconcile the previous external operation before preparing an update"
+            );
+        }
+        if let Some(path) = &args.source_config {
+            update::prepare_source(
+                &deployment,
+                file.directory(),
+                &args.nodes,
+                &Config::load(&binding.context.config_path)?,
+                &Config::load(path)?,
+                path,
+                args.build_helper
+                    .as_deref()
+                    .context("external source update requires --build-helper")?,
+            )?
+        } else {
+            update::prepare(
+                &deployment,
+                file.directory(),
+                &args.nodes,
+                args.image_record
+                    .as_deref()
+                    .context("external update requires --image-record")?,
+                args.image_manifest
+                    .as_deref()
+                    .context("external update requires --image-manifest")?,
+                args.image_config
+                    .as_deref()
+                    .context("external update requires --image-config")?,
+                &cancelled,
+            )?
+        }
+    };
+    output.observe_update(id)?;
+    let output = std::cell::RefCell::new(output);
+    let mut backend = LiveBackend::new(
+        &deployment,
+        file.directory(),
+        &data_path(args.managed.managed_dir, "tools")?,
+        cancelled,
+        args.recover_lease_etag,
+    )?;
+    backend.observe_commands(|command| output.borrow_mut().observe_command(command));
+    let receipt = update::apply(
+        &store,
+        &file,
+        &binding,
+        &mut deployment,
+        &mut backend,
+        id,
+        args.reconcile,
+        &mut |receipt, phase| output.borrow_mut().observe(receipt, phase),
+    )?;
+    Ok(
+        json!({"networkId":binding.network_id,"updateId":id,"operationId":receipt.operation_id,
+        "completed":true,"storageCompatibility":"owner-acknowledged","paymentQualification":"pending","launchReady":false}),
+    )
+}
+
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(skip_all, name = "cloud_cli.node_launch")
@@ -761,6 +985,25 @@ fn node_launch(
     mut output: Option<&mut cli_output::OperationOutput>,
 ) -> Result<(StateStore, zdn::state::Binding, DeploymentFile, Deployment)> {
     let config = Config::load(&args.launch.config.config)?;
+    if args.external_request.is_some()
+        || matches!(
+            config.chain,
+            Some(zdn::config::ChainSelection::External { .. })
+        )
+    {
+        #[cfg(target_os = "linux")]
+        return external_node_launch(args, &config, cancel.map(|flag| flag.as_ref()), output);
+        #[cfg(not(target_os = "linux"))]
+        eyre::bail!("external deployment execution requires Linux");
+    }
+    config.require_ordinary_chain()?;
+    ensure!(
+        args.external_public_directory.is_none()
+            && args.external_trust.is_none()
+            && args.external_build_helper.is_none()
+            && args.external_native_port.is_none(),
+        "external launch inputs require an explicit external config selection"
+    );
     let source_build = config.node.source.path.is_some();
     zdn::devnet::require_supported_services(&config)?;
     let resolved_package = if let Some(path) = &args.package {
@@ -1119,6 +1362,302 @@ fn node_launch(
     Ok((store, binding, file, deployment))
 }
 
+#[cfg(target_os = "linux")]
+fn external_node_launch(
+    args: NodeLaunchArgs,
+    config: &Config,
+    cancel: Option<&AtomicBool>,
+    output: Option<&mut cli_output::OperationOutput>,
+) -> Result<(StateStore, zdn::state::Binding, DeploymentFile, Deployment)> {
+    use zdn::{devnet::external::ExternalRequest, foundation::external::ExternalDeployment};
+    if args.external_request.is_none() {
+        return external_source_launch(args, config, cancel, output);
+    }
+    ensure!(
+        [
+            &args.package,
+            &args.manifest,
+            &args.bundle,
+            &args.image_record,
+            &args.image_manifest,
+            &args.image_config,
+            &args.lightwallet_image_record,
+            &args.lightwallet_image_manifest,
+            &args.lightwallet_image_config,
+            &args.host_helper
+        ]
+        .iter()
+        .all(|input| input.is_none()),
+        "external launch cannot select ordinary inputs"
+    );
+    let bytes = zdn::devnet::read_bounded(
+        args.external_request
+            .as_deref()
+            .context("external launch requires --external-request")?,
+        4 * 1024 * 1024,
+    )?;
+    ensure!(
+        args.external_request_sha256.as_deref() == Some(zdn::devnet::sha256(&bytes).as_str()),
+        "external request SHA256 differs"
+    );
+    let request = ExternalRequest::from_slice(&bytes)?;
+    request.require_config(config)?;
+    let directory = args
+        .external_directory
+        .as_deref()
+        .context("external launch requires --external-directory")?;
+    let uncancelled = AtomicBool::new(false);
+    let cancelled = cancel.unwrap_or(&uncancelled);
+    request.prepare(
+        directory,
+        std::time::Instant::now() + std::time::Duration::from_secs(120),
+        cancelled,
+    )?;
+    let candidate = ExternalDeployment::new(
+        request.clone(),
+        args.external_native_port.unwrap_or(18233),
+        args.reward_address
+            .context("external launch requires --reward-address")?,
+    )?;
+    let store = open_store(args.launch.store)?;
+    let profile = load_profile(&store, &config.profile)?;
+    ensure!(
+        profile.team.deployment.is_some(),
+        "external deployment requires runtime access setup"
+    );
+    let (_, context) = binding_context(&BindingArgs {
+        config: args.launch.config,
+        store: StoreArgs {
+            state_dir: Some(store.root().into()),
+        },
+        scope: BindingScopeArgs {
+            team_id: Some(profile.team.team_id.clone()),
+            account_id: Some(profile.team.aws.account_id.clone()),
+            region: Some(profile.team.aws.region.clone()),
+        },
+    })?;
+    let binding = store.bind(&context, &config.name)?;
+    let file = DeploymentFile::open(store.root(), binding.network_id)?;
+    let deployment = if file.exists() {
+        let saved = file.load()?;
+        ensure!(
+            saved.team == profile.team
+                && saved.spec.aws_profile == profile.aws_profile
+                && args
+                    .launch
+                    .ami_id
+                    .as_ref()
+                    .is_none_or(|id| id == &saved.spec.ami_id)
+                && args
+                    .launch
+                    .availability_zone
+                    .as_ref()
+                    .is_none_or(|zone| zone == &saved.spec.availability_zone)
+                && saved.spec.size == config.node.resources.preset,
+            "external deployment host settings differ"
+        );
+        ensure!(
+            serde_json::to_value(
+                saved
+                    .external
+                    .as_ref()
+                    .context("cannot convert an ordinary deployment to external")?
+            )? == serde_json::to_value(&candidate)?,
+            "external deployment inputs are immutable; use saved recovery or a new binding"
+        );
+        saved
+    } else {
+        let spec = FoundationSpec {
+            scope: profile.team.scope(),
+            network_id: binding.network_id,
+            aws_profile: profile.aws_profile,
+            ami_id: args
+                .launch
+                .ami_id
+                .context("first external launch requires --ami-id")?,
+            availability_zone: args
+                .launch
+                .availability_zone
+                .context("first external launch requires --availability-zone")?,
+            size: config.node.resources.preset,
+            retain_chain_disk: true,
+        };
+        let mut deployment = Deployment::new(spec, profile.team)?;
+        deployment.external = Some(candidate);
+        deployment
+    };
+    ensure!(
+        !deployment.destroyed,
+        "external deployment was destroyed; use a new binding"
+    );
+    request.snapshot(
+        directory,
+        &file.directory().join("artifacts"),
+        std::time::Instant::now() + std::time::Duration::from_secs(180),
+        cancelled,
+    )?;
+    deployment.render()?;
+    file.save(&deployment)?;
+    Ok((store, binding, file, deployment))
+}
+
+#[cfg(target_os = "linux")]
+fn external_source_launch(
+    args: NodeLaunchArgs,
+    config: &Config,
+    cancel: Option<&AtomicBool>,
+    output: Option<&mut cli_output::OperationOutput>,
+) -> Result<(StateStore, zdn::state::Binding, DeploymentFile, Deployment)> {
+    use zdn::foundation::external::source::SourcePreparation;
+    ensure!(
+        [
+            &args.package,
+            &args.manifest,
+            &args.bundle,
+            &args.image_record,
+            &args.image_manifest,
+            &args.image_config,
+            &args.lightwallet_image_record,
+            &args.lightwallet_image_manifest,
+            &args.lightwallet_image_config,
+        ]
+        .iter()
+        .all(|input| input.is_none()),
+        "initial external source launch cannot select ordinary or prebuilt image inputs"
+    );
+    let public = args.external_public_directory.as_deref().context("external source launch requires --external-public-directory (or use --external-request for a completed image)")?;
+    let trust = serde_json::from_slice(&zdn::devnet::read_bounded(
+        args.external_trust
+            .as_deref()
+            .context("external source launch requires --external-trust")?,
+        2 * 1024 * 1024,
+    )?)?;
+    let helper = args
+        .host_helper
+        .as_deref()
+        .context("external source launch requires --host-helper")?;
+    let exporter = args
+        .external_build_helper
+        .as_deref()
+        .context("external source launch requires --external-build-helper")?;
+    let reward = args
+        .reward_address
+        .context("external source launch requires --reward-address")?;
+    let store = open_store(args.launch.store)?;
+    let profile = load_profile(&store, &config.profile)?;
+    ensure!(
+        profile.team.deployment.is_some(),
+        "external source launch requires runtime access setup"
+    );
+    let (_, context) = binding_context(&BindingArgs {
+        config: args.launch.config.clone(),
+        store: StoreArgs {
+            state_dir: Some(store.root().into()),
+        },
+        scope: BindingScopeArgs {
+            team_id: Some(profile.team.team_id.clone()),
+            account_id: Some(profile.team.aws.account_id.clone()),
+            region: Some(profile.team.aws.region.clone()),
+        },
+    })?;
+    let binding = store.bind(&context, &config.name)?;
+    let file = DeploymentFile::open(store.root(), binding.network_id)?;
+    let mut deployment = Deployment::new(
+        FoundationSpec {
+            scope: profile.team.scope(),
+            network_id: binding.network_id,
+            aws_profile: profile.aws_profile,
+            ami_id: args
+                .launch
+                .ami_id
+                .context("first external source launch requires --ami-id")?,
+            availability_zone: args
+                .launch
+                .availability_zone
+                .context("first external source launch requires --availability-zone")?,
+            size: config.node.resources.preset,
+            retain_chain_disk: true,
+        },
+        profile.team,
+    )?;
+    if file.exists() {
+        let saved = file.load()?;
+        // A failed purely local preflight may leave only its original owner.
+        // Reuse that owner, never replace it or recapture a published snapshot.
+        ensure!(saved.external.is_none() && saved.external_source.is_none()
+            && saved.cluster.is_none() && saved.foundation_runtime.is_none()
+            && saved.runtime.is_none() && !saved.destroyed && !saved.stack_initialized
+            && saved.outputs.is_none() && saved.last_operation.is_none()
+            && saved.unresolved_operation.is_none() && store.handoff_operations(&binding)?.is_empty()
+            && !file.directory().join(zdn::foundation::external::source::ROOT).try_exists()?
+            && !file.directory().join(zdn::foundation::external::source::FILE).try_exists()?
+            && saved.team == deployment.team
+            && serde_json::to_value(&saved.spec)? == serde_json::to_value(&deployment.spec)?,
+            "external source launch already has saved immutable inputs; use up --saved NETWORK --reconcile without recapturing source or overriding inputs");
+        deployment = saved;
+    }
+    // Persist ownership before preparation; no credentials or cloud calls occur
+    // until the fixed public inputs and requirement-bound native journal exist.
+    file.save(&deployment)?;
+    let uncancelled = AtomicBool::new(false);
+    let preparation = SourcePreparation::prepare(
+        &deployment,
+        config,
+        &args.launch.config.config,
+        file.directory(),
+        public,
+        trust,
+        helper,
+        exporter,
+        args.external_native_port.unwrap_or(18233),
+        reward,
+        cancel.unwrap_or(&uncancelled),
+    )?;
+    deployment.external_source = Some(preparation);
+    file.save(&deployment)?;
+    if let Some(cancelled) = cancel {
+        complete_external_source(&file, &mut deployment, cancelled, output)?;
+    }
+    Ok((store, binding, file, deployment))
+}
+
+#[cfg(target_os = "linux")]
+fn complete_external_source(
+    file: &DeploymentFile,
+    deployment: &mut Deployment,
+    cancelled: &AtomicBool,
+    mut output: Option<&mut cli_output::OperationOutput>,
+) -> Result<()> {
+    let preparation = deployment
+        .external_source
+        .as_ref()
+        .context("external source preparation missing")?;
+    preparation.verify_local(deployment, file.directory())?;
+    let (api, _) = zdn::credentials::client(
+        &deployment.team,
+        aws::AwsSelection {
+            profile: deployment.spec.aws_profile.clone(),
+            account_id: deployment.team.aws.account_id.clone(),
+            region: deployment.team.aws.region.clone(),
+        },
+        &file.directory().join("credentials"),
+    )?;
+    let external = preparation.complete(
+        &api,
+        deployment,
+        file.directory(),
+        &foundation_live::SystemRuntime::default(),
+        cancelled,
+        &mut |build| match output.as_deref_mut() {
+            Some(output) => output.observe_build(build),
+            None => Ok(()),
+        },
+    )?;
+    deployment.external = Some(external);
+    deployment.render()?;
+    file.save(deployment)
+}
+
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(skip_all, name = "cloud_cli.source_preflight")
@@ -1192,9 +1731,24 @@ pub fn devnet(command: DevnetCommand) -> Result<()> {
                         && deployment.spec.aws_profile == profile.aws_profile,
                     "saved deployment differs from selected local profile"
                 );
+                let api_version = if deployment.external.is_some()
+                    || deployment.external_source.is_some()
+                    || (deployment.cluster.is_none()
+                        && zdn::foundation::external::source::SourcePreparation::read(
+                            &store
+                                .root()
+                                .join("foundation")
+                                .join(binding.network_id.to_string()),
+                        )?
+                        .is_some())
+                {
+                    zdn::handoff::EXTERNAL_API_VERSION
+                } else {
+                    zdn::handoff::API_VERSION
+                };
                 let sha256 = zdn::handoff::export::export(&store, &binding, &output)?;
                 print_json(
-                    &json!({"apiVersion": zdn::handoff::API_VERSION, "networkId": binding.network_id,
+                    &json!({"apiVersion": api_version, "networkId": binding.network_id,
                     "output": output, "sha256": sha256, "cloudAccessChecked": false}),
                 )
             }
@@ -1211,12 +1765,25 @@ pub fn devnet(command: DevnetCommand) -> Result<()> {
                 let attached = zdn::handoff::import::import(
                     &store, &context, network_id, &profile, &from, &sha256,
                 )?;
+                let deployment = DeploymentFile::read_snapshot(store.root(), attached.network_id)?;
+                let api_version =
+                    if deployment.external.is_some() || deployment.external_source.is_some() {
+                        zdn::handoff::EXTERNAL_API_VERSION
+                    } else {
+                        zdn::handoff::API_VERSION
+                    };
                 print_json(
-                    &json!({"apiVersion": zdn::handoff::API_VERSION, "networkId": attached.network_id,
+                    &json!({"apiVersion": api_version, "networkId": attached.network_id,
                     "binding": attached, "cloudAccessChecked": false, "deploymentStarted": false}),
                 )
             }
         },
+        #[cfg(target_os = "linux")]
+        DevnetCommand::Control(args) => {
+            let mut output =
+                cli_output::OperationOutput::new(cli_output::Format::Human, "devnet control");
+            print_json(&devnet_control(args, &mut output)?)
+        }
         DevnetCommand::Update(args) => {
             let mut output =
                 cli_output::OperationOutput::new(cli_output::Format::Human, "devnet update");
@@ -1228,6 +1795,32 @@ pub fn devnet(command: DevnetCommand) -> Result<()> {
                 "--saved is supported only by devnet up"
             );
             let config = Config::load(&args.launch.config.config)?;
+            if args.external_request.is_some()
+                || matches!(
+                    config.chain,
+                    Some(zdn::config::ChainSelection::External { .. })
+                )
+            {
+                let (_, _, file, deployment) = node_launch(args, None, None)?;
+                let pulumi_yaml = deployment
+                    .external
+                    .as_ref()
+                    .map(|_| deployment.render()?.to_yaml())
+                    .transpose()?;
+                return print_json(&json!({"networkId":deployment.spec.network_id,
+                    "receiptDirectory":file.directory(),"external":deployment.external,
+                    "externalSourcePreparation":deployment.external_source,
+                    "pulumiYaml":pulumi_yaml,"cloudActionStarted":false,
+                    "launchReady":false,"qualification":"pending"}));
+            }
+            config.require_ordinary_chain()?;
+            ensure!(
+                args.external_public_directory.is_none()
+                    && args.external_trust.is_none()
+                    && args.external_build_helper.is_none()
+                    && args.external_native_port.is_none(),
+                "external launch inputs require an explicit external config selection"
+            );
             if let Some(source_root) = config.source_root(&args.launch.config.config)? {
                 ensure!(args.package.is_none(), "a package contains a completed image; source render cannot resolve a deployment package");
                 zdn::devnet::require_supported_services(&config)?;
@@ -1308,12 +1901,26 @@ pub fn devnet_discovery(command: DevnetCommand) -> Result<serde_json::Value> {
         DevnetCommand::List { store, profile } => discovery::list(store, profile),
         DevnetCommand::Status(args) => {
             let (store, binding, profile) = existing_selection(args)?;
-            let deployment = select_existing_profile(
+            let mut deployment = select_existing_profile(
                 DeploymentFile::read_snapshot(store.root(), binding.network_id)?,
                 profile,
             )?;
+            if deployment.external.is_none() && deployment.external_source.is_none() {
+                if let Some(preparation) =
+                    zdn::foundation::external::source::SourcePreparation::read(
+                        &store
+                            .root()
+                            .join("foundation")
+                            .join(binding.network_id.to_string()),
+                    )?
+                {
+                    preparation.validate(&deployment)?;
+                    deployment.external_source = Some(preparation);
+                    deployment.validate()?;
+                }
+            }
             ensure!(
-                deployment.cluster.is_some(),
+                deployment.has_nodes() || deployment.external_source.is_some(),
                 "saved deployment is a health-test foundation; use foundation status"
             );
             status_report(&store, &binding, &deployment)
@@ -1349,6 +1956,13 @@ pub fn devnet_discovery(command: DevnetCommand) -> Result<serde_json::Value> {
                     "health refuses an incomplete or foreign operation"
                 );
             }
+            #[cfg(target_os = "linux")]
+            if deployment.external.is_some() {
+                foundation_live::external::health::validate(&deployment, &directory, options)?;
+            } else {
+                zdn::health::validate(&deployment, &directory, options)?;
+            }
+            #[cfg(not(target_os = "linux"))]
             zdn::health::validate(&deployment, &directory, options)?;
             // Selected credentials must not rewrite the immutable saved volume proofs.
             let (api, _) = zdn::credentials::client(
@@ -1358,6 +1972,19 @@ pub fn devnet_discovery(command: DevnetCommand) -> Result<serde_json::Value> {
             )?;
             api.verify_identity()?;
             let cancel = cancellation()?;
+            #[cfg(target_os = "linux")]
+            if deployment.external.is_some() {
+                return Ok(serde_json::to_value(
+                    foundation_live::external::health::check(
+                        &api,
+                        &deployment,
+                        &directory,
+                        options,
+                        &foundation_live::SystemRuntime::default(),
+                        &cancel,
+                    )?,
+                )?);
+            }
             let report = zdn::health::check(
                 &api,
                 &deployment,
@@ -1469,7 +2096,18 @@ pub fn devnet_destroy(
     ensure!(yes,"devnet destroy removes hosts/network; pass --yes (disks/artifacts remain unless --delete-data is set)");
     let (store, binding, file, mut deployment) = existing(args)?;
     output.network_id = Some(binding.network_id);
-    if deployment.cluster.is_none() {
+    if deployment.external.is_none() && deployment.external_source.is_none() {
+        if let Some(preparation) =
+            zdn::foundation::external::source::SourcePreparation::read(file.directory())?
+        {
+            // The published public ownership record suffices for cleanup. Do
+            // not open or run its companion/helper, even after a partial save.
+            preparation.validate(&deployment)?;
+            deployment.external_source = Some(preparation);
+            file.save(&deployment)?;
+        }
+    }
+    if !deployment.has_nodes() && deployment.external_source.is_none() {
         ensure!(
             deployment.foundation_runtime.is_none(),
             "saved deployment is a health-test foundation; use foundation destroy"
@@ -1536,9 +2174,31 @@ fn status_report(
     // unknown distinct from a failed preservation check in a cleanup receipt.
     let mut inventory = json!(foundation_live::inventory(&api, deployment)?);
     inventory["shared_backend_preserved"] = serde_json::Value::Null;
-    Ok(
-        json!({"networkId":binding.network_id,"destroyed":deployment.destroyed,"inventory":inventory,"lastOperation":deployment.last_operation,"lease":lease.map(|v|json!({"record":v.record,"etag":v.etag})),"savedOutputs":deployment.outputs,"savedRuntime":deployment.runtime,"liveReadinessChecked":false,"sharedBackendChecked":false}),
-    )
+    let mut report = json!({"networkId":binding.network_id,"destroyed":deployment.destroyed,"inventory":inventory,"lastOperation":deployment.last_operation,"lease":lease.map(|v|json!({"record":v.record,"etag":v.etag})),"savedOutputs":deployment.outputs,"savedRuntime":deployment.runtime,"liveReadinessChecked":false,"sharedBackendChecked":false});
+    if deployment.external.is_some() || deployment.external_source.is_some() {
+        report["requestKind"] = json!(if deployment.external.is_some() {
+            "external-nodes"
+        } else {
+            "external-source-build"
+        });
+        if let Some(source) = &deployment.external_source {
+            // Saved build observations only; missing local exporter bytes or
+            // malformed receipts remain unknown, not remote success or retry.
+            report["sourceBuild"] = json!(zdn::build_job::validate_preparation(
+                &store
+                    .root()
+                    .join("foundation")
+                    .join(binding.network_id.to_string())
+                    .join(zdn::foundation::external::source::ROOT)
+                    .join("build"),
+                &deployment.team,
+                &source.contract,
+            )
+            .ok());
+            report["sourceBuildLiveChecked"] = json!(false);
+        }
+    }
+    Ok(report)
 }
 
 #[cfg_attr(
@@ -1866,6 +2526,7 @@ fn launch(
     mode: LaunchMode<'_>,
 ) -> Result<(StateStore, zdn::state::Binding, DeploymentFile, Deployment)> {
     let config = Config::load(&args.config.config)?;
+    config.require_ordinary_chain()?;
     let store = open_store(args.store)?;
     let profile = load_profile(&store, &config.profile)?;
     let (_, context) = binding_context(&BindingArgs {
@@ -1983,7 +2644,45 @@ fn saved_node_launch(
         !deployment.runtime.as_ref().is_some_and(|r| r.pending()),
         "an image update is unresolved; resume devnet update before up"
     );
-    if deployment.cluster.is_none() {
+    #[cfg(target_os = "linux")]
+    if deployment.external.is_none() {
+        use zdn::foundation::external::source::{SourcePreparation, FILE};
+        // Bridge a crash after atomic preparation publication but before the
+        // deployment replacement. This record binds the saved owner/spec/team.
+        if deployment.external_source.is_none() {
+            if let Some(preparation) = SourcePreparation::read(file.directory())? {
+                preparation.verify_local(&deployment, file.directory())?;
+                foundation::write_json(&file.directory().join(FILE), &preparation)?;
+                deployment.external_source = Some(preparation);
+                file.save(&deployment)?;
+            }
+        }
+        if let Some(preparation) = &deployment.external_source {
+            preparation.verify_local(&deployment, file.directory())?;
+            ensure!(
+                store.handoff_operations(&binding)?.is_empty(),
+                "initial external source preparation has operation history"
+            );
+            let build = zdn::build_job::validate_preparation(
+                &file
+                    .directory()
+                    .join(zdn::foundation::external::source::ROOT)
+                    .join("build"),
+                &deployment.team,
+                &preparation.contract,
+            )?;
+            output.observe_build(&build)?;
+            ensure!(!build.submission_recorded || reconcile,
+                "saved external build was dispatched; establish controller ownership and pass --reconcile (the source controller must be quiescent)");
+            complete_external_source(&file, &mut deployment, cancel, Some(output))?;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    ensure!(
+        deployment.external_source.is_none(),
+        "external source execution requires Linux"
+    );
+    if !deployment.has_nodes() {
         let preparation = zdn::build::preparation::Preparation::read(file.directory())
             .context("saved deployment has no node ClusterRequest or complete source preparation; foundation-only requests and old incomplete builds cannot use --saved")?;
         zdn::devnet::select_native_runtime(
@@ -2031,10 +2730,6 @@ fn saved_node_launch(
         file.save(&deployment)?;
     }
     deployment.require_native_execution()?;
-    let request = deployment
-        .cluster
-        .as_ref()
-        .context("missing saved node request after build verification")?;
     let mut blocking = deployment.unresolved_operation;
     for id in [deployment.last_operation, deployment.unresolved_operation]
         .into_iter()
@@ -2070,7 +2765,18 @@ fn saved_node_launch(
             eyre::bail!("previous operation has an uncertain outcome; inspect devnet status, then retry with --reconcile");
         }
     }
-    request.verify_local(file.directory())?;
+    if let Some(request) = &deployment.cluster {
+        request.verify_local(file.directory())?;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(external) = &deployment.external {
+        foundation_live::external::validate_saved(&deployment, file.directory())?;
+        external.typed_request()?.prepare(
+            &file.directory().join("artifacts"),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+            cancel,
+        )?;
+    }
     deployment.render()?;
     Ok((store, binding, file, deployment))
 }

@@ -4,7 +4,7 @@
 //! rewrites checkpoint trust, writes a database, generates blocks, or treats a
 //! successful submit response as proof that a block reached the best chain.
 
-use super::artifacts::{snapshot_bundle, VerifiedBlock};
+use super::artifacts::{snapshot_bundle, VerifiedBlock, VerifiedBundle};
 use super::manifest::ConsensusManifest;
 use super::readiness::PreparedRules;
 use super::rpc::{Clock, NodeRpc, RpcError};
@@ -133,6 +133,17 @@ pub fn load_seed_history(
     let manifest = manifest.normalized()?;
     check_recipe(&manifest, &snapshot.blocks)?;
     let rules = PreparedRules::new(&manifest).context("verify node rules before bootstrap")?;
+    load_prepared(snapshot, rules, rpc, budget)
+}
+
+/// Shared bounded bootstrap state machine. External packages supply an
+/// authenticated snapshot without pretending to be an ordinary consensus TAR.
+fn load_prepared(
+    snapshot: VerifiedBundle,
+    rules: PreparedRules,
+    rpc: &impl NodeRpc,
+    budget: Budget<'_, impl Clock>,
+) -> Result<BootstrapReport> {
     rules
         .verify(rpc, budget.timeout()?)
         .context("verify node rules before bootstrap")?;
@@ -192,6 +203,31 @@ pub fn load_seed_history(
         qualification: "pending".into(),
         launch_ready: false,
     })
+}
+
+#[cfg(target_os = "linux")]
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "chain.bootstrap.load_external")
+)]
+pub(crate) fn load_external(
+    snapshot: VerifiedBundle,
+    compiled: &crate::public_chain_adapter::contract::Compiled,
+    rpc: &impl NodeRpc,
+    clock: &impl Clock,
+    options: &BootstrapOptions,
+) -> Result<BootstrapReport> {
+    options.validate()?;
+    load_prepared(
+        snapshot,
+        PreparedRules::external(compiled),
+        rpc,
+        Budget {
+            clock,
+            started: clock.elapsed(),
+            options,
+        },
+    )
 }
 
 #[cfg_attr(
@@ -433,7 +469,10 @@ fn observe_hash(
                     && matches!(
                         (code, message.as_str()),
                         (-8, "Block not found")
-                            | (-32602, "Provided index is greater than the current tip")
+                            | (
+                                -32602 | -1,
+                                "Provided index is greater than the current tip"
+                            )
                     )) =>
         {
             Ok(None)

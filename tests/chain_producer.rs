@@ -405,6 +405,56 @@ fn unpaced_production_has_no_scheduled_wait_and_persists_each_block_within_its_b
 }
 
 #[test]
+fn absolute_height_ceiling_applies_across_invocations_without_extra_generation() {
+    let mut fixture = Fixture::new(7);
+    fixture.options.unpaced = true;
+    fixture.options.max_height = Some(2);
+    let report = fixture.run().unwrap();
+    assert_eq!(report["confirmedBlocks"], 2);
+    assert_eq!(report["lastConfirmedTip"]["height"], 2);
+    assert_eq!(fixture.node.generate_times().len(), 2);
+    // A new invocation cannot reset an absolute height bound like a count bound.
+    assert_eq!(fixture.run().unwrap()["confirmedBlocks"], 2);
+    fixture.options.max_height = Some(1);
+    assert_eq!(fixture.run().unwrap()["confirmedBlocks"], 2);
+    assert_eq!(fixture.node.generate_times().len(), 2);
+    fixture.options.max_height = Some(3);
+    assert_eq!(fixture.run().unwrap()["confirmedBlocks"], 3);
+    assert_eq!(fixture.node.generate_times().len(), 3);
+}
+
+#[test]
+fn duration_ceiling_stops_before_a_tick_and_counts_time_spent_generating() {
+    for (seconds, expected) in [(24, 0), (25, 0), (26, 1)] {
+        let mut fixture = Fixture::new(5);
+        fixture.options.max_duration = Some(Duration::from_secs(seconds));
+        assert_eq!(fixture.run().unwrap()["confirmedBlocks"], expected);
+        assert_eq!(fixture.node.generate_times().len(), expected);
+    }
+    let mut fixture = Fixture::new(5);
+    fixture.options.unpaced = true;
+    fixture.options.max_duration = Some(Duration::from_secs(2));
+    fixture.node.modes([Generate::Later {
+        after: Duration::from_secs(3),
+    }]);
+    let report = fixture.run().unwrap();
+    assert_eq!(report["confirmedBlocks"], 1);
+    assert_eq!(report["pending"], Value::Null);
+    assert_eq!(fixture.node.generate_times().len(), 1);
+}
+
+#[test]
+fn invalid_duration_refuses_before_state_or_rpc() {
+    for duration in [Duration::ZERO, Duration::from_secs(3601)] {
+        let mut fixture = Fixture::new(1);
+        fixture.options.max_duration = Some(duration);
+        assert!(fixture.run().is_err());
+        assert!(!fixture.options.state_dir.exists());
+        assert!(fixture.node.sim.lock().unwrap().calls.is_empty());
+    }
+}
+
+#[test]
 fn unpaced_requires_a_positive_bound_before_state_creation_or_rpc() {
     for bound in [None, Some(0)] {
         let mut fixture = Fixture::new(1);
@@ -469,10 +519,15 @@ fn unpaced_interruption_retains_unknown_work_and_recovery_counts_toward_the_new_
         .chain
         .insert(2, block_hash(2));
     fixture.options.max_blocks = Some(1);
+    fixture.options.max_height = Some(2);
     let report = fixture.run().unwrap();
     assert_eq!(report["confirmedBlocks"], 2);
     assert_eq!(report["pending"], Value::Null);
     assert_eq!(fixture.node.generate_times().len(), 2);
+    // A recovered intent reaches the absolute ceiling without another request.
+    assert_eq!(fixture.run().unwrap()["confirmedBlocks"], 2);
+    assert_eq!(fixture.node.generate_times().len(), 2);
+    fixture.options.max_height = Some(3);
     // A later bounded invocation may now append one block to the same journal.
     assert_eq!(fixture.run().unwrap()["confirmedBlocks"], 3);
     assert_eq!(fixture.node.generate_times().len(), 3);
@@ -589,6 +644,33 @@ fn restart_reconciles_a_pending_late_commit_before_authorizing_more_blocks() {
         .insert(1, block_hash(1));
     fixture.run().unwrap();
     assert_eq!(fixture.node.generate_times().len(), 1);
+}
+
+#[test]
+fn exhausted_first_launch_admission_reconciles_pending_without_new_generation() {
+    for ceiling in [0, 1] {
+        let mut fixture = Fixture::new(20);
+        fixture.node.modes([Generate::Absent]);
+        assert!(fixture.run().is_err());
+        fixture.options.max_height = Some(ceiling);
+        // An unresolved intent is not permission to generate after expiry.
+        assert!(fixture.run().is_err());
+        assert_eq!(fixture.node.generate_times().len(), 1);
+        fixture
+            .node
+            .sim
+            .lock()
+            .unwrap()
+            .chain
+            .insert(1, block_hash(1));
+        let report = fixture.run().unwrap();
+        assert_eq!(report["confirmedBlocks"], 1);
+        assert_eq!(report["pending"], Value::Null);
+        assert_eq!(report["phase"], "stopped");
+        assert_eq!(fixture.node.generate_times().len(), 1);
+        fixture.run().unwrap();
+        assert_eq!(fixture.node.generate_times().len(), 1);
+    }
 }
 
 #[test]

@@ -22,6 +22,8 @@ mod cli_output;
 mod cli_reference;
 mod cloud_cli;
 mod connect_cli;
+#[cfg(target_os = "linux")]
+mod external_cli;
 mod lightwallet_cli;
 #[cfg(feature = "profiling")]
 mod profiling;
@@ -161,6 +163,47 @@ enum Commands {
         #[arg(long)]
         protocol: String,
     },
+    /// Internal isolated external native identity provisioning; manifest on stdin.
+    #[cfg(target_os = "linux")]
+    #[command(name = "__external-native-identity", hide = true)]
+    ExternalNativeIdentity {
+        #[arg(long)]
+        protocol: String,
+    },
+    /// Internal final external host installation; canonical manifest on stdin.
+    #[cfg(target_os = "linux")]
+    #[command(name = "__external-install", hide = true)]
+    ExternalInstall {
+        #[arg(long)]
+        protocol: String,
+    },
+    /// Internal immutable external runtime control, never an ordinary manifest.
+    #[cfg(target_os = "linux")]
+    #[command(name = "__external-runtime", hide = true)]
+    ExternalRuntime {
+        #[arg(long)]
+        protocol: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(value_enum)]
+        operation: zdn::host::external::runtime::control::Operation,
+    },
+    /// Internal single-use bounded external qualification; canonical stdin request.
+    #[cfg(target_os = "linux")]
+    #[command(name = "__external-qualification", hide = true)]
+    ExternalQualification {
+        #[arg(long)]
+        protocol: String,
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    /// Internal resume-forward external image update; canonical stdin request.
+    #[cfg(target_os = "linux")]
+    #[command(name = "__external-update", hide = true)]
+    ExternalUpdate {
+        #[arg(long)]
+        protocol: String,
+    },
     /// Internal native-only image update; bounded canonical request on stdin.
     #[cfg(target_os = "linux")]
     #[command(name = "__host-update", hide = true)]
@@ -261,6 +304,12 @@ enum Commands {
     Package {
         #[command(subcommand)]
         command: PackageCommand,
+    },
+    /// Select, inspect, stage and recompile a pinned external public-chain package.
+    #[cfg(target_os = "linux")]
+    External {
+        #[command(subcommand)]
+        command: external_cli::Command,
     },
     /// Prepare and authenticate exact-release catalogs with explicit trusted keys.
     Release {
@@ -868,12 +917,16 @@ fn run_machine(cli: Cli) -> ExitCode {
         Commands::Devnet { command: cloud_cli::DevnetCommand::Destroy { .. } } => "devnet destroy",
         Commands::Devnet { command: cloud_cli::DevnetCommand::Up { .. } } => "devnet up",
         Commands::Devnet { command: cloud_cli::DevnetCommand::Update(_) } => "devnet update",
+        #[cfg(target_os = "linux")]
+        Commands::Devnet { command: cloud_cli::DevnetCommand::Control(_) } => "devnet control",
         Commands::Devnet { command: cloud_cli::DevnetCommand::List { .. } } => "devnet list",
         Commands::Devnet { command: cloud_cli::DevnetCommand::Status(_) } => "devnet status",
         Commands::Devnet { command: cloud_cli::DevnetCommand::Health { .. } } => "devnet health",
         Commands::Doctor(_) => "doctor",
         Commands::Package { command: PackageCommand::Verify { .. } } => "package verify",
         Commands::Package { command: PackageCommand::Export { .. } } => "package export",
+        #[cfg(target_os = "linux")]
+        Commands::External { .. } => "external",
         Commands::Release { command: release_cli::ReleaseCommand::Verify(_) } => "release verify",
         Commands::Release { command: release_cli::ReleaseCommand::Resolve { .. } } => "release resolve",
         Commands::Release { command: release_cli::ReleaseCommand::Sign { .. } } => "release sign",
@@ -940,6 +993,8 @@ fn run_machine(cli: Cli) -> ExitCode {
     // Machine streams never prompt. Output format does not authorize cloud work.
     let result = match cli.command {
         Commands::Reference { schema } => Ok(cli_reference::data(schema)),
+        #[cfg(target_os = "linux")]
+        Commands::External { command } => external_cli::run(command),
         Commands::Rpc(args) => return connect_cli::machine_rpc(args, cli.format),
         Commands::Submit(args) => return connect_cli::submit(args, cli.format),
         Commands::Init(args) => init(args, true),
@@ -983,6 +1038,10 @@ fn run_machine(cli: Cli) -> ExitCode {
         Commands::Devnet {
             command: cloud_cli::DevnetCommand::Update(args),
         } => cloud_cli::devnet_update(args, &mut operation_output),
+        #[cfg(target_os = "linux")]
+        Commands::Devnet {
+            command: cloud_cli::DevnetCommand::Control(args),
+        } => cloud_cli::devnet_control(args, &mut operation_output),
         Commands::Devnet {
             command:
                 command @ (cloud_cli::DevnetCommand::List { .. }
@@ -1074,6 +1133,7 @@ fn run_machine(cli: Cli) -> ExitCode {
                 "doctor" => ("doctor-failed", "Local prerequisites could not be inspected."),
                 "package verify" => ("package-verification-failed", "Package byte integrity or compatibility declarations could not be verified. No artifacts were executed."),
                 "package export" => ("package-export-failed", "Package could not be verified or exported. Inspect the output path before retrying; existing paths are never replaced."),
+                "external" => ("external-chain-failed", "External chain inputs, explicit trust or the selected runtime gate did not pass validation. Inspect new output paths and retained evidence before retrying."),
                 "release verify" => ("release-verification-failed", "Catalog declarations could not be authenticated with the explicitly trusted keys."),
                 "release resolve" => ("release-resolution-failed", "Exact release could not be authenticated, resolved or exported. Inspect the output path before retrying."),
                 "release sign" => ("release-signing-failed", "Catalog could not be signed or the new signature published. Inspect the output path before retrying."),
@@ -1302,6 +1362,14 @@ fn run(cli: Cli) -> Result<()> {
                     capabilities.push(zdn::lightwallet_service::native::INSTALL_PROTOCOL);
                     #[cfg(target_os = "linux")]
                     capabilities.push(zdn::host::runtime::update::PROTOCOL);
+                    #[cfg(target_os = "linux")]
+                    capabilities.push(zdn::host::external::identity::SCHEMA);
+                    #[cfg(target_os = "linux")]
+                    capabilities.push(zdn::host::external::runtime::SCHEMA);
+                    #[cfg(target_os = "linux")]
+                    capabilities.push(zdn::host::external::runtime::update::SCHEMA);
+                    #[cfg(target_os = "linux")]
+                    capabilities.push(zdn::host::external::runtime::qualification::SCHEMA);
                 }
             }
             ensure!(
@@ -1336,6 +1404,95 @@ fn run(cli: Cli) -> Result<()> {
                 print_json(&report)?;
             }
             Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Commands::ExternalNativeIdentity { protocol } => {
+            ensure!(
+                protocol == zdn::host::external::identity::SCHEMA,
+                "unsupported external identity protocol"
+            );
+            use std::sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc,
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let handler = Arc::clone(&cancelled);
+            ctrlc::set_handler(move || handler.store(true, Ordering::SeqCst))?;
+            print_json(&zdn::host::external::identity::runtime::execute(
+                &cancelled,
+            )?)
+        }
+        #[cfg(target_os = "linux")]
+        Commands::ExternalInstall { protocol } => {
+            ensure!(
+                protocol == zdn::host::external::runtime::SCHEMA,
+                "unsupported external runtime protocol"
+            );
+            use std::sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc,
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let handler = Arc::clone(&cancelled);
+            ctrlc::set_handler(move || handler.store(true, Ordering::SeqCst))?;
+            print_json(&zdn::host::external::runtime::control::install_stdin(
+                &cancelled,
+            )?)
+        }
+        #[cfg(target_os = "linux")]
+        Commands::ExternalRuntime {
+            protocol,
+            manifest,
+            operation,
+        } => {
+            ensure!(
+                protocol == zdn::host::external::runtime::SCHEMA,
+                "unsupported external runtime protocol"
+            );
+            use std::sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc,
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let handler = Arc::clone(&cancelled);
+            ctrlc::set_handler(move || handler.store(true, Ordering::SeqCst))?;
+            if let Some(report) =
+                zdn::host::external::runtime::control::execute(&manifest, operation, &cancelled)?
+            {
+                print_json(&report)?;
+            }
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Commands::ExternalQualification { protocol, manifest } => {
+            use zdn::host::external::runtime::qualification;
+            ensure!(
+                protocol == qualification::SCHEMA,
+                "unsupported external qualification protocol"
+            );
+            use std::sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc,
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let handler = Arc::clone(&cancelled);
+            ctrlc::set_handler(move || handler.store(true, Ordering::SeqCst))?;
+            print_json(&qualification::execute(&manifest, &cancelled)?)
+        }
+        #[cfg(target_os = "linux")]
+        Commands::ExternalUpdate { protocol } => {
+            ensure!(
+                protocol == zdn::host::external::runtime::update::SCHEMA,
+                "unsupported external update protocol"
+            );
+            use std::sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc,
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let handler = Arc::clone(&cancelled);
+            ctrlc::set_handler(move || handler.store(true, Ordering::SeqCst))?;
+            print_json(&zdn::host::external::runtime::update::execute(&cancelled)?)
         }
         #[cfg(target_os = "linux")]
         Commands::HostInstall { protocol } => {
@@ -1541,6 +1698,8 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Plan(args) => print_json(&plan(args)?),
         Commands::Devnet { command } => cloud_cli::devnet(command),
         Commands::Lightwallet { command } => lightwallet_cli::run(command),
+        #[cfg(target_os = "linux")]
+        Commands::External { command } => print_json(&external_cli::run(command)?),
         Commands::Package {
             command: PackageCommand::Verify { manifest, sha256 },
         } => print_json(&verify_package(&manifest, &sha256)?),
@@ -1938,6 +2097,20 @@ fn check(args: ConfigArgs) -> Result<serde_json::Value> {
 )]
 fn plan(args: ConfigArgs) -> Result<serde_json::Value> {
     let config = Config::load(&args.config)?;
+    if matches!(
+        config.chain,
+        Some(zdn::config::ChainSelection::External { .. })
+    ) {
+        return Ok(json!({
+            "apiVersion": "zdn-plan/v1alpha1", "launchReady": false,
+            "capabilities": zdn::devnet::capabilities(&config)?,
+            "configSha256": config.fingerprint()?, "config": config,
+            "chainSelection": "external", "operationalSupport": cfg!(target_os = "linux"),
+            "remaining": ["Verify explicitly trusted public artifacts and feature-bound image/build inputs",
+                "Check deployment-host sandbox prerequisites and authenticated cloud ownership",
+                "Qualify live deployment, bootstrap, payments, updates and recovery separately"]
+        }));
+    }
     let chain = ChainRequest::from_config(&config)?;
     let compatibility = CompatibilityRecord::pending(&chain)?;
     Ok(json!({

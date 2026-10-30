@@ -16,6 +16,8 @@ use crate::chain::{
 };
 
 #[cfg(target_os = "linux")]
+pub(crate) mod adapter_sandbox;
+#[cfg(target_os = "linux")]
 pub mod artifact_delivery;
 pub mod capacity;
 pub mod capacity_bootstrap;
@@ -23,6 +25,8 @@ pub mod capacity_bootstrap;
 pub mod command;
 #[cfg(target_os = "linux")]
 pub mod container;
+#[cfg(target_os = "linux")]
+pub mod external;
 #[cfg(target_os = "linux")]
 pub mod files;
 #[cfg(target_os = "linux")]

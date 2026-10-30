@@ -183,7 +183,11 @@ impl<'de> Visitor<'de> for Seed<'_> {
     tracing::instrument(skip_all, name = "client_gateway.runtime.decode")
 )]
 fn decode(raw: &[u8]) -> Result<Value> {
-    ensure!(raw.len() <= MAX, "JSON size limit");
+    decode_limit(raw, MAX)
+}
+
+fn decode_limit(raw: &[u8], limit: usize) -> Result<Value> {
+    ensure!(raw.len() <= limit, "JSON size limit");
     let mut normalized = None;
     let (mut quoted, mut escaped, mut depth) = (false, false, 0usize);
     let mut i = 0;
@@ -253,6 +257,7 @@ struct Wire<'a> {
     socket: TcpStream,
     stop: &'a AtomicBool,
     deadline: Instant,
+    limit: usize,
 }
 impl Wire<'_> {
     fn check(&self) -> Result<()> {
@@ -280,7 +285,7 @@ impl Wire<'_> {
         }
     }
     fn exact(&mut self, size: usize) -> Result<Vec<u8>> {
-        ensure!(size <= MAX, "body limit");
+        ensure!(size <= self.limit, "body limit");
         let mut bytes = vec![0; size];
         let mut pos = 0;
         while pos < size {
@@ -416,6 +421,7 @@ fn forward(c: &Config, client: &Wire<'_>, request: &Value, dispatched: &mut bool
         socket,
         stop: client.stop,
         deadline,
+        limit: client.limit,
     };
     let body = serde_json::to_vec(request)?;
     let header = format!("POST / HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAuthorization: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", c.upstream, authorization, body.len());
@@ -471,7 +477,7 @@ fn forward(c: &Config, client: &Wire<'_>, request: &Value, dispatched: &mut bool
                 "chunk size"
             );
             let size = usize::from_str_radix(size_text, 16)?;
-            ensure!(size <= MAX - raw.len(), "response limit");
+            ensure!(size <= client.limit - raw.len(), "response limit");
             if size == 0 {
                 ensure!(upstream.headers()?.is_empty(), "unsupported trailers");
                 break;
@@ -488,7 +494,7 @@ fn forward(c: &Config, client: &Wire<'_>, request: &Value, dispatched: &mut bool
             if n == 0 {
                 break;
             }
-            ensure!(raw.len() + n <= MAX, "response limit");
+            ensure!(raw.len() + n <= client.limit, "response limit");
             raw.extend_from_slice(&buf[..n]);
         }
     }
@@ -501,7 +507,7 @@ fn forward(c: &Config, client: &Wire<'_>, request: &Value, dispatched: &mut bool
                 .any(|w| w == authorization.as_bytes()),
         "credential in reply"
     );
-    let mut answer = decode(&raw)?;
+    let mut answer = decode_limit(&raw, client.limit)?;
     // JSON escaping must not turn a rejected wire credential into a successful
     // decoded result. This also checks object keys, not just leaf values.
     let decoded_wire = serde_json::to_vec(&answer)?;
@@ -572,7 +578,7 @@ fn failure(id: Value, code: i32, message: &str, data: Option<Value>) -> Value {
 )]
 fn reply(client: &mut Wire<'_>, status: u16, value: Value) -> Result<()> {
     let body = serde_json::to_vec(&value)?;
-    ensure!(body.len() <= MAX, "response limit");
+    ensure!(body.len() <= client.limit, "response limit");
     client.write(format!("HTTP/1.1 {status} RPC\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",body.len()).as_bytes())?;
     client.write(&body)
 }
@@ -585,7 +591,11 @@ struct RequestHead {
     feature = "profiling",
     tracing::instrument(skip_all, name = "client_gateway.runtime.request")
 )]
-fn handle(client: &mut Wire<'_>, c: &Config) -> Result<()> {
+fn handle(
+    client: &mut Wire<'_>,
+    c: &Config,
+    body_class: crate::rpc_limits::BodyClass,
+) -> Result<()> {
     let parsed = (|| -> Result<RequestHead> {
         #[cfg(feature = "profiling")]
         let _span = tracing::info_span!("client_gateway.runtime.request_headers").entered();
@@ -635,10 +645,15 @@ fn handle(client: &mut Wire<'_>, c: &Config) -> Result<()> {
             .and_then(|v| v["result"]["blocks"].as_u64())
             .is_some()
         {
+            let fingerprint = if c.identity["apiVersion"] == "zdn-external-volume/v1" {
+                &c.identity["nativeFingerprint"]
+            } else {
+                &c.identity["consensusFingerprint"]
+            };
             return reply(
                 client,
                 200,
-                json!({"apiVersion":OBSERVATION_API_VERSION,"deploymentId":c.identity["deploymentId"],"nodeId":c.identity["nodeId"],"consensusFingerprint":c.identity["consensusFingerprint"],"serviceSha256":c.service_sha256,"endpoint":ENDPOINT,"status":"ready"}),
+                json!({"apiVersion":OBSERVATION_API_VERSION,"deploymentId":c.identity["deploymentId"],"nodeId":c.identity["nodeId"],"consensusFingerprint":fingerprint,"serviceSha256":c.service_sha256,"endpoint":ENDPOINT,"status":"ready"}),
             );
         }
         return reply(
@@ -685,13 +700,14 @@ fn handle(client: &mut Wire<'_>, c: &Config) -> Result<()> {
         );
         let size = length(lengths[0])?;
         ensure!(size > 0, "empty body");
-        if size > MAX {
+        if size > body_class.ceiling() {
             return Err(eyre!("oversized"));
         }
         let mut v = {
             #[cfg(feature = "profiling")]
             let _span = tracing::info_span!("client_gateway.runtime.request_body").entered();
-            decode(&client.exact(size)?)?
+            client.limit = body_class.ceiling();
+            decode_limit(&client.exact(size)?, body_class.ceiling())?
         };
         let object = v.as_object_mut().ok_or_else(|| eyre!("invalid request"))?;
         ensure!(
@@ -734,7 +750,21 @@ fn handle(client: &mut Wire<'_>, c: &Config) -> Result<()> {
             );
         }
     };
-    if !ALLOWED_METHODS.contains(&request["method"].as_str().unwrap()) {
+    let rpc_method = request["method"].as_str().unwrap();
+    if length(values(&headers, "content-length")[0])? > body_class.request(rpc_method) {
+        return reply(
+            client,
+            413,
+            failure(
+                Value::Null,
+                -32600,
+                "RPC request exceeds its size limit",
+                None,
+            ),
+        );
+    }
+    client.limit = body_class.response(rpc_method, &request["params"]);
+    if !ALLOWED_METHODS.contains(&rpc_method) {
         return reply(
             client,
             403,
@@ -797,6 +827,7 @@ pub fn health(endpoint: SocketAddr, deadline: Instant, stop: &AtomicBool) -> Res
             socket,
             stop,
             deadline,
+            limit: MAX,
         };
         wire.write(
             format!("GET /health HTTP/1.1\r\nHost: {endpoint}\r\nConnection: close\r\n\r\n")
@@ -830,11 +861,27 @@ pub fn health(endpoint: SocketAddr, deadline: Instant, stop: &AtomicBool) -> Res
 /// must be IPv4 127.0.0.1; port zero fixtures are allowed. Startup verifies both
 /// identities, and every forward reopens both identities and the rotating cookie.
 /// Errors returned here are intentionally generic: never log internal exchanges.
+pub fn serve(listener: TcpListener, config: Config, stop: &AtomicBool) -> Result<()> {
+    serve_with_body_class(
+        listener,
+        config,
+        stop,
+        crate::rpc_limits::BodyClass::Default,
+    )
+}
+
+/// Explicit contract-selected transport class; this never broadens the method
+/// allowlist, changes cookie handling or establishes external-chain readiness.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(skip_all, name = "client_gateway.runtime.serve")
 )]
-pub fn serve(listener: TcpListener, config: Config, stop: &AtomicBool) -> Result<()> {
+pub fn serve_with_body_class(
+    listener: TcpListener,
+    config: Config,
+    stop: &AtomicBool,
+    body_class: crate::rpc_limits::BodyClass,
+) -> Result<()> {
     let run = || -> Result<()> {
         ensure!(
             listener.local_addr()?.ip() == std::net::Ipv4Addr::LOCALHOST
@@ -879,8 +926,9 @@ pub fn serve(listener: TcpListener, config: Config, stop: &AtomicBool) -> Result
                                 socket,
                                 stop,
                                 deadline,
+                                limit: MAX,
                             };
-                            let _ = handle(&mut client, c);
+                            let _ = handle(&mut client, c, body_class);
                         }));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(POLL),

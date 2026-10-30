@@ -446,6 +446,7 @@ fn layer_cache_render_reuses_sources_but_isolates_recipes_teams_and_attempts() {
             dockerfile: "docker/Dockerfile".into(),
             context: ".".into(),
             target: "runtime".into(),
+            cargo_features: Vec::new(),
         },
         platform: "linux/amd64".into(),
         required_capabilities: Default::default(),
@@ -511,6 +512,41 @@ fn layer_cache_render_reuses_sources_but_isolates_recipes_teams_and_attempts() {
     for removed in ["--load", "--no-cache", "docker save", "docker push"] {
         assert!(!script.contains(removed), "unexpected {removed}");
     }
+    assert!(!script.contains("--build-arg"));
+    assert!(prefix.contains("dcd63ab91680944b8452c9a496ebb81334edb1dde3c1fc163c7b82c9e756a852"));
+    let plain = render(&contract, &infra, uuid::Uuid::nil());
+    let mut featured = contract.clone();
+    let requirements = zdn::image::ImageBuildRequirements::new(
+        &["feature-a".into(), "feature-b".into()],
+        &["slh-dsa-b128s-v2".into()],
+    )
+    .unwrap();
+    featured.require_external(&requirements).unwrap();
+    let built = render(&featured, &infra, uuid::Uuid::nil());
+    assert_ne!(plain["cache"]["paths"], built["cache"]["paths"]);
+    let feature_script = built["phases"]["build"]["commands"][0].as_str().unwrap();
+    assert_eq!(feature_script.matches("--build-arg").count(), 1);
+    assert!(feature_script.contains("--build-arg 'FEATURES=feature-a,feature-b'"));
+    let mut other_capabilities = contract.clone();
+    other_capabilities
+        .require_external(
+            &zdn::image::ImageBuildRequirements::new(&requirements.cargo_features, &[]).unwrap(),
+        )
+        .unwrap();
+    assert_ne!(
+        built["cache"]["paths"],
+        render(&other_capabilities, &infra, uuid::Uuid::nil())["cache"]["paths"]
+    );
+    let mut empty = contract.clone();
+    empty
+        .require_external(&zdn::image::ImageBuildRequirements::new(&[], &[]).unwrap())
+        .unwrap();
+    assert!(
+        render(&empty, &infra, uuid::Uuid::nil())["phases"]["build"]["commands"][0]
+            .as_str()
+            .unwrap()
+            .contains("--build-arg 'FEATURES='")
+    );
     assert!(
         script.find("--body output/").unwrap()
             < script.find("mv \"$cache_next\" \"$cache_dir\"").unwrap()
