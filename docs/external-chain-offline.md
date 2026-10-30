@@ -312,9 +312,14 @@ launch/inspection/cleanup algorithms, not a parallel launcher. Gateway startup
 is read-only and does not take the installation lock, call cloud tools or write
 host receipts. The external gateway's trusted wrapper needs CAP_SETUID,
 CAP_SETGID and CAP_SETPCAP to drop all privileges before its isolated companion;
-the companion inherits none. AF_UNIX is permitted for sandbox setup, alongside
-the ordinary gateway socket families. Actual systemd policy qualification is
-still pending, not inferred from generated unit text.
+the companion inherits none. AF_UNIX and AF_NETLINK are permitted for sandbox
+setup, alongside the ordinary gateway socket families. Bubblewrap needs
+NETLINK_ROUTE to configure loopback inside its isolated network namespace;
+omitting AF_NETLINK makes startup fail before the adapter executes. This does
+not add host CAP_NET_ADMIN or CAP_SYS_ADMIN, relax the namespace isolation, or
+change the ordinary gateway unit. The original public package's compile/render
+preflight has passed locally under the generated systemd restrictions after
+this correction; a complete cloud gateway/payment journey remains unqualified.
 
 `ready` runs the seed bootstrap only when its durable identity-bound completion
 is absent and the local producer service is demonstrably stopped. Retained-state

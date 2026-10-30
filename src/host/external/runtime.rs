@@ -147,9 +147,11 @@ impl Manifest {
                     "CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
                     "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_SETPCAP",
                 )
+                // Bubblewrap configures loopback inside its isolated network
+                // namespace using NETLINK_ROUTE before running the adapter.
                 .replace(
                     "RestrictAddressFamilies=AF_INET AF_INET6",
-                    "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
+                    "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
                 )
         });
         Ok((node, producer, gateway))

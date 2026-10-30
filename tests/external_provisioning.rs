@@ -259,6 +259,7 @@ fn final_runtime_has_distinct_supervisor_and_exact_volume_ownership() {
     assert!(gateway.contains("gateway-serve"));
     assert!(gateway.contains("ProtectSystem=strict"));
     assert!(gateway.contains("CAP_SETUID CAP_SETGID CAP_SETPCAP"));
+    assert!(gateway.contains("RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n"));
     assert!(gateway.contains("After=zdn-node.service"));
     assert!(!gateway.contains("BindsTo=zdn-node.service"));
     assert!(!gateway.contains("PartOf=zdn-node.service"));
