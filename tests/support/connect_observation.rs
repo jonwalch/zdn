@@ -89,17 +89,23 @@ fn state_observations_cross_limit_classify_alias_reservations_and_reward_maturit
     fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let raw = rpc_count(&f, "getblock");
-    for name in ["alice", "alias"] {
+    for (name, pool, confirmed, spendable, reserved) in [
+        ("alice", "ironwood", 31, 24, 7),
+        ("alias", "ironwood", 31, 24, 7),
+        ("alice", "transparent", 83, 64, 19),
+        ("alias", "transparent", 83, 64, 19),
+    ] {
         let result = success(
-            command(&f, &["wallet", "balance", "--wallet", name])
+            command(&f, &["wallet", "balance", "--wallet", name, "--pool", pool])
                 .output()
                 .unwrap(),
         );
         assert_eq!(result["tip_height"], 4097);
         assert_eq!(result["schema_version"], 2);
-        assert_eq!(result["balance"]["confirmed_unspent_zat"], 31);
-        assert_eq!(result["balance"]["spendable_zat"], 24);
-        assert_eq!(result["balance"]["reserved_zat"], 7);
+        assert_eq!(result["balance"]["pool"], pool);
+        assert_eq!(result["balance"]["confirmed_unspent_zat"], confirmed);
+        assert_eq!(result["balance"]["spendable_zat"], spendable);
+        assert_eq!(result["balance"]["reserved_zat"], reserved);
         assert_eq!(result["local_reservations_checked"], true);
         assert!(!result.to_string().contains("history_sha256"));
     }
@@ -115,26 +121,36 @@ fn state_observations_cross_limit_classify_alias_reservations_and_reward_maturit
     assert_eq!(rewards["rewards"][1]["mature"], false);
     assert_eq!(rewards["rewards"][1]["locally_reserved"], false);
     let pending = rpc_count(&f, "getrawmempool");
-    let confirmed = success(
-        command(
-            &f,
-            &["wallet", "balance", "--wallet", "alice", "--confirmed-only"],
-        )
-        .output()
-        .unwrap(),
-    );
-    assert_eq!(confirmed["balance"]["confirmed_unspent_zat"], 31);
-    for key in [
-        "spendable_zat",
-        "pending_zat",
-        "pending_spent_zat",
-        "immature_zat",
-        "reserved_zat",
-        "mempool_sha256",
-    ] {
-        assert!(confirmed["balance"][key].is_null());
+    for (pool, total) in [("ironwood", 31), ("transparent", 83)] {
+        let confirmed = success(
+            command(
+                &f,
+                &[
+                    "wallet",
+                    "balance",
+                    "--wallet",
+                    "alice",
+                    "--confirmed-only",
+                    "--pool",
+                    pool,
+                ],
+            )
+            .output()
+            .unwrap(),
+        );
+        assert_eq!(confirmed["balance"]["confirmed_unspent_zat"], total);
+        for key in [
+            "spendable_zat",
+            "pending_zat",
+            "pending_spent_zat",
+            "immature_zat",
+            "reserved_zat",
+            "mempool_sha256",
+        ] {
+            assert!(confirmed["balance"][key].is_null());
+        }
+        assert_eq!(confirmed["local_reservations_checked"], false);
     }
-    assert_eq!(confirmed["local_reservations_checked"], false);
     assert_eq!(rpc_count(&f, "getrawmempool"), pending);
     assert_eq!(rpc_count(&f, "getblock"), raw);
     assert_eq!(
@@ -148,26 +164,32 @@ fn state_observations_cross_limit_classify_alias_reservations_and_reward_maturit
 fn state_observations_refuse_wrong_provenance_classification_and_cleanup() {
     let f = fixture();
     caught_up(&f);
-    for mode in [
-        "scope",
-        "generation",
-        "tip",
-        "anchor",
-        "mempool",
-        "balance-version",
-        "balance-sum",
-        "reward-maturity",
-        "reward-duplicate",
-        "extra",
-        "missing",
-    ] {
-        let output = command(&f, &["wallet", "balance", "--wallet", "alice"])
+    for pool in ["ironwood", "transparent"] {
+        for mode in [
+            "scope",
+            "generation",
+            "tip",
+            "anchor",
+            "mempool",
+            "balance-version",
+            "balance-sum",
+            "reward-maturity",
+            "reward-duplicate",
+            "extra",
+            "missing",
+            "capability",
+        ] {
+            let output = command(
+                &f,
+                &["wallet", "balance", "--wallet", "alice", "--pool", pool],
+            )
             .env("ZDN_OBSERVATION_MODE", mode)
             .output()
             .unwrap();
-        assert!(!output.status.success(), "accepted {mode}");
-        assert!(output.stdout.is_empty(), "published {mode}");
-        f.assert_rpc_closed();
+            assert!(!output.status.success(), "accepted {mode}");
+            assert!(output.stdout.is_empty(), "published {mode}");
+            f.assert_rpc_closed();
+        }
     }
     let output = command(&f, &["wallet", "balance", "--wallet", "alice"])
         .env("ZDN_CONNECT_MODE", "wallet-sync-cleanup-fails")
@@ -185,26 +207,32 @@ fn backend_worker() {
     let root = std::path::PathBuf::from(std::env::var_os("ZDN_CONNECT_FIXTURE").unwrap());
     let read = |p: &str| -> Value { serde_json::from_slice(&fs::read(p).unwrap()).unwrap() };
     let mut value = if args[0] == "capabilities" {
-        json!({"schema_version":1,"capabilities":["ironwood-wallet-state/v2","ironwood-wallet-state-observation/v2"]})
-    } else if args[0] == "state-observe" {
+        json!({"schema_version":1,"capabilities":["ironwood-wallet-state/v2","ironwood-wallet-state-observation/v2","transparent-wallet-state-observation/v1"]})
+    } else if matches!(
+        args[0].as_str(),
+        "state-observe" | "state-observe-transparent"
+    ) {
+        let transparent = args[0] == "state-observe-transparent";
         let state = read(&args[3]);
         let reserved = read(&args[5])
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["kind"] == "ironwood") as u64
-            * 7;
+            .any(|v| v["kind"] == if transparent { "p2pkh" } else { "ironwood" })
+            as u64
+            * if transparent { 19 } else { 7 };
+        let total = if transparent { 83 } else { 31 };
         assert!(read(&args[4])["transactions"]
             .as_array()
             .unwrap()
             .is_empty());
         let digest = hex::encode(Sha256::digest(b"ironwood-wallet-mempool/v1\0"));
         let height = state["tip_height"].as_u64().unwrap();
-        json!({"schema_version":2,"capability":"ironwood-wallet-state-observation/v2",
+        json!({"schema_version":2,"capability":if transparent { "transparent-wallet-state-observation/v1" } else { "ironwood-wallet-state-observation/v2" },
             "identity":read(&args[2]),"generation":state["generation"],"state_sha256":state["state_sha256"],
             "tip_height":height,"tip_hash":state["tip_hash"],"anchor_hex":state["anchor_hex"],"mempool_sha256":digest,
             "balance":{"schema_version":2,"tip_height":height,"tip_hash":state["tip_hash"],"anchor_hex":state["anchor_hex"],
-                "commitment_count":5,"mempool_sha256":digest,"confirmed_unspent_zat":31,"spendable_zat":31-reserved,
+                "commitment_count":5,"mempool_sha256":digest,"confirmed_unspent_zat":total,"spendable_zat":total-reserved,
                 "pending_zat":0,"pending_spent_zat":0,"immature_zat":0,"reserved_zat":reserved},
             "rewards":[{"txid":"67".repeat(32),"output_index":3,"height":height-99,"value_zat":23,"mature":true,"mempool_spent":false},
                 {"txid":"78".repeat(32),"output_index":1,"height":height-98,"value_zat":41,"mature":false,"mempool_spent":false}],
@@ -222,7 +250,10 @@ fn backend_worker() {
         );
         return;
     };
-    if args[0] == "state-observe" {
+    if matches!(
+        args[0].as_str(),
+        "state-observe" | "state-observe-transparent"
+    ) {
         match std::env::var("ZDN_OBSERVATION_MODE")
             .unwrap_or_default()
             .as_str()
@@ -233,7 +264,8 @@ fn backend_worker() {
             "anchor" => value["anchor_hex"] = json!("ff".repeat(32)),
             "mempool" => value["mempool_sha256"] = json!("ff".repeat(32)),
             "balance-version" => value["balance"]["schema_version"] = json!(1),
-            "balance-sum" => value["balance"]["spendable_zat"] = json!(32),
+            "balance-sum" => value["balance"]["spendable_zat"] = json!(84),
+            "capability" => value["capability"] = json!("wrong-pool-observation"),
             "reward-maturity" => value["rewards"][1]["mature"] = json!(true),
             "reward-duplicate" => value["rewards"][1] = value["rewards"][0].clone(),
             "extra" => value["history_sha256"] = json!("ff".repeat(32)),

@@ -65,6 +65,11 @@ fn response(root: &Path, args: &[String]) -> Result<Value> {
                     json!({"schema_version":1,"capabilities":["ironwood-wallet-state/v2","ironwood-wallet-snapshot-payment/v2","ironwood-wallet-state-rewind/v2"]}),
                 );
             }
+            if mode == "transparent" {
+                return Ok(
+                    json!({"schema_version":1,"capabilities":["ironwood-wallet-state/v2","ironwood-wallet-snapshot-payment/v2","transparent-wallet-payments/v1"]}),
+                );
+            }
             if mode == "v2" {
                 return Ok(
                     json!({"schema_version":1,"capabilities":["ironwood-wallet-state/v2","ironwood-wallet-snapshot-payment/v2"]}),
@@ -380,6 +385,10 @@ fn ordered(v: &Value, keys: &[&str]) -> String {
     )
 }
 fn plan_hash(p: &Value) -> String {
+    let transparent = matches!(
+        p["allocation"]["kind"].as_str(),
+        Some("transparent" | "unshield")
+    );
     let identity = ordered(
         &p["identity"],
         &[
@@ -393,7 +402,11 @@ fn plan_hash(p: &Value) -> String {
         &p["allocation"],
         &[
             "kind",
-            "recipient_ironwood_address_hex",
+            if transparent {
+                "recipient_transparent_address"
+            } else {
+                "recipient_ironwood_address_hex"
+            },
             "amount_zat",
             "fee_zat",
             "change_zat",
@@ -406,7 +419,20 @@ fn plan_hash(p: &Value) -> String {
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| ordered(i, &["kind", "txid", "action_index"]))
+        .map(|i| {
+            ordered(
+                i,
+                &[
+                    "kind",
+                    "txid",
+                    if i["kind"] == "p2pkh" {
+                        "output_index"
+                    } else {
+                        "action_index"
+                    },
+                ],
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     allocation = allocation.replace(
@@ -417,7 +443,19 @@ fn plan_hash(p: &Value) -> String {
         .as_array()
         .unwrap()
         .iter()
-        .map(|o| ordered(o, &["ironwood_address_hex", "value_zat"]))
+        .map(|o| {
+            ordered(
+                o,
+                &[
+                    if transparent {
+                        "transparent_address"
+                    } else {
+                        "ironwood_address_hex"
+                    },
+                    "value_zat",
+                ],
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     allocation = allocation.replace(
@@ -479,11 +517,32 @@ fn snapshot_response(root: &Path, args: &[String]) -> Result<Value> {
         let s = &snapshot["state"];
         let r = &snapshot["context"]["request"];
         let request_bytes = fs::read(Path::new(&args[3]).parent().unwrap().join("request.json"))?;
-        let p = json!({"schema_version":2,"identity":snapshot["identity"],"snapshot_sha256":hex::encode(Sha256::digest(fs::read(&args[3])?)),
+        let mut p = json!({"schema_version":2,"identity":snapshot["identity"],"snapshot_sha256":hex::encode(Sha256::digest(fs::read(&args[3])?)),
             "state_sha256":s["state_sha256"],"generation":s["generation"],"tip_height":s["tip_height"],"tip_hash":s["tip_hash"],"anchor_hex":s["anchor_hex"],
             "mempool_sha256":framed_digest(b"ironwood-wallet-mempool/v1\0",std::iter::empty())?,
             "allocation":{"kind":r["kind"],"recipient_ironwood_address_hex":r["recipient"],"amount_zat":r["amount_zat"],"fee_zat":1,"change_zat":7,
             "inputs":[{"kind":"ironwood","txid":"12".repeat(32),"action_index":0}],"outputs":[{"ironwood_address_hex":r["recipient"],"value_zat":r["amount_zat"]}],"request_sha256":hex::encode(Sha256::digest(request_bytes))},"plan_authorization_hex":"aa".repeat(64)});
+        if matches!(r["kind"].as_str(), Some("transparent" | "unshield")) {
+            let a = &mut p["allocation"];
+            a.as_object_mut()
+                .unwrap()
+                .remove("recipient_ironwood_address_hex");
+            a["recipient_transparent_address"] = r["recipient"].clone();
+            a["outputs"] =
+                json!([{"transparent_address":r["recipient"],"value_zat":r["amount_zat"]}]);
+            if r["kind"] == "transparent" {
+                a["inputs"] = json!([{"kind":"p2pkh","txid":"34".repeat(32),"output_index":2}]);
+            }
+            match std::env::var("ZDN_TRANSPARENT_PLAN_MODE")
+                .unwrap_or_default()
+                .as_str()
+            {
+                "mixed" => a["recipient_ironwood_address_hex"] = json!("22".repeat(43)),
+                "kind" => a["kind"] = json!("send"),
+                "amount" => a["amount_zat"] = json!(3),
+                _ => {}
+            }
+        }
         private(&args[4], &serde_json::to_vec(&p)?)?;
         return Ok(p);
     }

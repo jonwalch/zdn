@@ -3,14 +3,15 @@ use super::*;
 use serde_json::{json, Value};
 
 const CAPABILITY: &str = "ironwood-wallet-state-observation/v2";
+const TRANSPARENT_CAPABILITY: &str = "transparent-wallet-state-observation/v1";
 const MAX_MONEY: u64 = 2_100_000_000_000_000;
 
 pub(super) enum Kind {
-    Balance { confirmed_only: bool },
+    Balance { confirmed_only: bool, pool: Pool },
     Rewards,
 }
 
-pub(super) fn capable(backend: &Path) -> Result<bool> {
+pub(super) fn capable(backend: &Path, pool: Pool) -> Result<bool> {
     let mut command = Command::new(backend);
     command.arg("capabilities");
     let response = zdn::dependencies::run_command_in_memory(&mut command, Duration::from_secs(30))?;
@@ -23,11 +24,13 @@ pub(super) fn capable(backend: &Path) -> Result<bool> {
         caps["schema_version"] == 1 && caps["capabilities"].is_array(),
         "invalid backend capabilities"
     );
-    Ok(caps["capabilities"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|v| v == CAPABILITY))
+    Ok(caps["capabilities"].as_array().unwrap().iter().any(|v| {
+        v == if pool == Pool::Transparent {
+            TRANSPARENT_CAPABILITY
+        } else {
+            CAPABILITY
+        }
+    }))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -95,9 +98,18 @@ pub(super) fn run(
     let confirmed_only = matches!(
         kind,
         Kind::Balance {
-            confirmed_only: true
+            confirmed_only: true,
+            ..
         }
     );
+    let pool = match kind {
+        Kind::Balance { pool, .. } => pool,
+        Kind::Rewards => Pool::Ironwood,
+    };
+    let (action, capability) = match pool {
+        Pool::Ironwood => ("state-observe", CAPABILITY),
+        Pool::Transparent => ("state-observe-transparent", TRANSPARENT_CAPABILITY),
+    };
     let result = super::super::connect_cli::with_wallet_rpc(
         args,
         Some(identity.clone()),
@@ -134,7 +146,7 @@ pub(super) fn run(
             let value = sync::backend(
                 backend,
                 &[
-                    Path::new("state-observe"),
+                    Path::new(action),
                     &key,
                     identity_file.path(),
                     &key.parent().unwrap().join("scan-v2.sqlite"),
@@ -148,7 +160,7 @@ pub(super) fn run(
             let b = &observation.balance;
             ensure!(
                 observation.schema_version == 2
-                    && observation.capability == CAPABILITY
+                    && observation.capability == capability
                     && observation.identity == binding
                     && observation.canonicality == "caller_attested_not_live_checked"
                     && progress["generation"] == observation.generation
@@ -230,7 +242,7 @@ pub(super) fn run(
             match kind {
                 Kind::Rewards => output["rewards"] = json!(rewards),
                 Kind::Balance { .. } => {
-                    output["balance"] = json!({"pool":"ironwood","confirmed_unspent_zat":b.confirmed_unspent_zat,
+                    output["balance"] = json!({"pool":pool,"confirmed_unspent_zat":b.confirmed_unspent_zat,
                     "spendable_zat":b.spendable_zat,"pending_zat":b.pending_zat,
                     "pending_spent_zat":b.pending_spent_zat,"immature_zat":b.immature_zat,
                     "reserved_zat":b.reserved_zat,"mempool_sha256":b.mempool_sha256});

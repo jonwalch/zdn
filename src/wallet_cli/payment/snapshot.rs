@@ -4,7 +4,7 @@ use zdn::{chain::manifest::ConsensusManifest, endpoints::EndpointFile};
 
 const CAPABILITY: &str = "ironwood-wallet-snapshot-payment/v2";
 
-pub(super) fn capable(backend: &Path) -> Result<bool> {
+pub(super) fn capable(backend: &Path, transparent: bool) -> Result<bool> {
     // Old pinned backends predate capability discovery. Only an explicit v2
     // advertisement selects v2; saved plans never use this fallback.
     let mut command = Command::new(backend);
@@ -19,17 +19,18 @@ pub(super) fn capable(backend: &Path) -> Result<bool> {
         value["schema_version"] == 1 && value["capabilities"].is_array(),
         "invalid backend capabilities"
     );
-    Ok(value["capabilities"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|v| v == CAPABILITY))
+    let capabilities = value["capabilities"].as_array().unwrap();
+    Ok(capabilities.iter().any(|v| v == CAPABILITY)
+        && (!transparent
+            || capabilities
+                .iter()
+                .any(|v| v == "transparent-wallet-payments/v1")))
 }
 
-pub(super) fn preflight(backend: &Path) -> Result<()> {
+pub(super) fn preflight(backend: &Path, transparent: bool) -> Result<()> {
     ensure!(
-        capable(backend)?,
-        "saved v2 payment requires ironwood-wallet-snapshot-payment/v2"
+        capable(backend, transparent)?,
+        "saved payment requires snapshot/v2 and, for transparent payments, transparent-wallet-payments/v1"
     );
     super::super::sync::preflight(backend)
 }
@@ -52,7 +53,7 @@ struct Output {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Allocation {
+struct IronwoodAllocation {
     kind: String,
     recipient_ironwood_address_hex: String,
     amount_zat: u64,
@@ -61,6 +62,44 @@ struct Allocation {
     inputs: Vec<journal::Input>,
     outputs: Vec<Output>,
     request_sha256: String,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransparentOutput {
+    transparent_address: String,
+    value_zat: u64,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransparentAllocation {
+    kind: String,
+    recipient_transparent_address: String,
+    amount_zat: u64,
+    fee_zat: u64,
+    change_zat: u64,
+    inputs: Vec<journal::Input>,
+    outputs: Vec<TransparentOutput>,
+    request_sha256: String,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Allocation {
+    Ironwood(IronwoodAllocation),
+    Transparent(TransparentAllocation),
+}
+impl Allocation {
+    fn request_sha256(&self) -> &str {
+        match self {
+            Self::Ironwood(a) => &a.request_sha256,
+            Self::Transparent(a) => &a.request_sha256,
+        }
+    }
+    fn into_inputs(self) -> Vec<journal::Input> {
+        match self {
+            Self::Ironwood(a) => a.inputs,
+            Self::Transparent(a) => a.inputs,
+        }
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,9 +127,16 @@ impl Plan {
                 && hex_bytes(&p.tip_hash, 32)
                 && hex_bytes(&p.anchor_hex, 32)
                 && hex_bytes(&p.mempool_sha256, 32)
-                && hex_bytes(&p.allocation.request_sha256, 32)
+                && hex_bytes(p.allocation.request_sha256(), 32)
                 && hex_bytes(&p.plan_authorization_hex, 64),
             "invalid snapshot payment plan"
+        );
+        ensure!(
+            match &p.allocation {
+                Allocation::Ironwood(a) => matches!(a.kind.as_str(), "send" | "fund"),
+                Allocation::Transparent(a) => matches!(a.kind.as_str(), "transparent" | "unshield"),
+            },
+            "payment kind differs from allocation pool"
         );
         Ok(p)
     }
@@ -231,10 +277,10 @@ pub(super) fn prepare(
             && request.recipient == recipient
             && request.amount_zat == amount_zat
             && request.fee_zat == fee_zat
-            && typed.allocation.kind == kind
-            && typed.allocation.amount_zat == amount_zat
-            && fee_zat.is_none_or(|fee| fee == typed.allocation.fee_zat)
-            && typed.allocation.request_sha256
+            && plan["allocation"]["kind"] == kind
+            && plan["allocation"]["amount_zat"] == amount_zat
+            && fee_zat.is_none_or(|fee| plan["allocation"]["fee_zat"] == fee)
+            && typed.allocation.request_sha256()
                 == hex::encode(Sha256::digest(serde_json::to_vec(&request)?)),
         "snapshot plan differs from original intent"
     );
@@ -263,7 +309,7 @@ pub(super) fn prepare(
             && checked.plan_sha256 == Plan::parse(&plan)?.hash()?,
         "backend did not authenticate original snapshot plan"
     );
-    let record = journal.reserve(id, plan, typed.allocation.inputs)?;
+    let record = journal.reserve(id, plan, typed.allocation.into_inputs())?;
     if let Some(pending) = pending {
         pending.recheck(&mut |m, p| rpc.read(m, p))?;
         let tip = history::Tip {
@@ -376,7 +422,7 @@ pub(super) fn check(
             && c.txid == e.txid
             && c.snapshot_sha256 == p.snapshot_sha256
             && c.state_sha256 == p.state_sha256
-            && c.request_sha256 == p.allocation.request_sha256
+            && c.request_sha256 == p.allocation.request_sha256()
             && c.plan_sha256 == p.hash()?
             && c.canonicality == "original_preparation_only_not_live_checked",
         "backend did not authenticate original snapshot transaction"

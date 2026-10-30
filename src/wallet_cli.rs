@@ -1,5 +1,5 @@
 //! Narrow public-JSON bridge to the separately selected Ironwood executable.
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use eyre::{ensure, Context, ContextCompat, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +21,13 @@ pub(super) mod payment;
 pub(crate) mod settings;
 mod store;
 mod sync;
+
+#[derive(Clone, Copy, PartialEq, ValueEnum, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Pool {
+    Ironwood,
+    Transparent,
+}
 
 const BACKEND_HELP: &str = "Backend selection: first configure the trusted pair for this wallet root:\n  zdn wallet backend set --backend /absolute/path/ironwood-wallet --backend-sha256 INDEPENDENTLY_TRUSTED_HASH\nBackend-using commands recheck those bytes on every use. For one command place BOTH overrides BEFORE the leaf:\n  zdn wallet --backend PATH --backend-sha256 HASH <command> ...\nPartial overrides refuse; there is no PATH search, download or automatic trust-by-hashing. --wallet-dir selects the settings AND named-wallet root; use the same root throughout. Journal/list/history-export commands refuse backend overrides and do not read saved backend settings; history-export still contacts the network.\n\nKeys are plaintext. Keep keyfiles, private output parents and coherent wallet backups under your control, outside Git/node source/build archives; symlinks and nonprivate paths refuse. Hash identity is not publisher trust and the backend is not sandboxed. A backend failure may leave an output: inspect it and choose a new destination rather than overwriting/deleting blindly. Key-only import is scan-only and does not restore signing authority. Never edit receipts to bypass recovery/signing policy. See docs/wallet.md for full backup/recovery and first-payment instructions.";
 
@@ -224,6 +231,9 @@ enum WalletCommand {
         /// As-of scan only, with unknown classifications; supports older scan-only backends.
         #[arg(long)]
         confirmed_only: bool,
+        /// Transparent balances require a named wallet and matching backend; exclude coinbase rewards.
+        #[arg(long, value_enum, default_value = "ironwood")]
+        pool: Pool,
         #[command(flatten)]
         history: super::connect_cli::WalletHistoryArgs,
     },
@@ -589,7 +599,7 @@ pub fn run(args: WalletArgs) -> Result<()> {
             );
         }
         WalletCommand::Rewards { history, wallet } => {
-            if observation::capable(&backend)? {
+            if observation::capable(&backend, Pool::Ironwood)? {
                 return observation::run(
                     &backend,
                     &wallet_root,
@@ -653,17 +663,30 @@ pub fn run(args: WalletArgs) -> Result<()> {
             keyfile,
             wallet,
             confirmed_only,
+            pool,
             mut history,
         } => {
+            ensure!(
+                pool != Pool::Transparent || wallet.is_some(),
+                "transparent balances require --wallet and authenticated state"
+            );
             let (keyfile, identity) = if let Some(name) = wallet {
                 history.named_network(keyfile)?;
-                if observation::capable(&backend)? {
+                let capable = observation::capable(&backend, pool)?;
+                ensure!(
+                    pool != Pool::Transparent || capable,
+                    "transparent balance requires transparent-wallet-state-observation/v1; no fallback to Ironwood"
+                );
+                if capable {
                     return observation::run(
                         &backend,
                         &wallet_root,
                         history,
                         &name,
-                        observation::Kind::Balance { confirmed_only },
+                        observation::Kind::Balance {
+                            confirmed_only,
+                            pool,
+                        },
                     );
                 }
                 let identity = history.selection()?.1;

@@ -27,6 +27,9 @@ pub struct PaymentOptions {
     /// Explicit integer zatoshis; omit for the backend's conservative fee policy.
     #[arg(long)]
     fee_zat: Option<u64>,
+    /// Destination pool; transparent send spends normal UTXOs, while transparent fund unshields Ironwood funds.
+    #[arg(long, value_enum, default_value = "ironwood")]
+    pool: Pool,
     /// Resume this exact operation, retaining its original request and signed bytes.
     #[arg(long)]
     operation_id: Option<Uuid>,
@@ -46,7 +49,7 @@ pub struct SendArgs {
     /// Existing local signing-enabled wallet name on this network; scan-only imports refuse even on resume.
     #[arg(long)]
     from: String,
-    /// A local wallet name, a supported Testnet Unified Address, or a raw Ironwood receiver.
+    /// Local wallet name, or an explicit address for the selected pool (Testnet t-address for transparent).
     #[arg(long)]
     to: String,
 }
@@ -62,7 +65,7 @@ pub struct FundArgs {
     /// Destination local wallet name; required unless --address is supplied, and conflicts with --address.
     #[arg(long, required_unless_present = "address", conflicts_with = "address")]
     wallet: Option<String>,
-    /// Explicit supported Testnet Unified Address or raw Ironwood receiver, instead of --wallet. Never a reward P2PKH address.
+    /// Explicit address for the selected pool instead of --wallet; transparent funding requires Ironwood funds first.
     #[arg(long)]
     address: Option<String>,
 }
@@ -212,7 +215,11 @@ pub(super) fn rewards(
 }
 
 pub fn send(args: SendArgs) -> Result<()> {
-    pay(args.options, "send", &args.from, &args.to, true)
+    let kind = match args.options.pool {
+        Pool::Ironwood => "send",
+        Pool::Transparent => "transparent",
+    };
+    pay(args.options, kind, &args.from, &args.to, true)
 }
 
 #[cfg_attr(
@@ -220,18 +227,16 @@ pub fn send(args: SendArgs) -> Result<()> {
     tracing::instrument(skip_all, name = "wallet_cli.payment.fund")
 )]
 pub fn fund(args: FundArgs) -> Result<()> {
+    let kind = match args.options.pool {
+        Pool::Ironwood => "fund",
+        Pool::Transparent => "unshield",
+    };
     let named = args.wallet.is_some();
     let recipient = args
         .wallet
         .or(args.address)
         .context("select a destination")?;
-    pay(
-        args.options,
-        "fund",
-        &args.funding_wallet,
-        &recipient,
-        named,
-    )
+    pay(args.options, kind, &args.funding_wallet, &recipient, named)
 }
 
 #[cfg_attr(
@@ -386,10 +391,22 @@ fn pay(
     verify_wallet(&backend, &wallet, &key)?;
     // send accepts either a named local wallet or an explicit receiver. A missing
     // name is never silently resolved through another network or an AWS service.
-    let recipient = if named && !hex_bytes(destination, 43) && !destination.starts_with("utest1") {
+    let transparent = options.pool == Pool::Transparent;
+    let explicit = hex_bytes(destination, 43)
+        || destination.starts_with("utest1")
+        || transparent
+            && bs58::decode(destination)
+                .with_check(None)
+                .into_vec()
+                .is_ok_and(|bytes| bytes.len() == 22);
+    let recipient = if named && !explicit {
         let (receipt, receiver_key) = store::load(&root, &identity, destination)?;
         verify_wallet(&backend, &receipt, &receiver_key)?;
-        receipt.public.ironwood_address_hex
+        if transparent {
+            receipt.public.reward_address
+        } else {
+            receipt.public.ironwood_address_hex
+        }
     } else {
         destination.to_owned()
     };
@@ -431,10 +448,14 @@ fn pay(
         {
             true
         }
-        None => snapshot::capable(&backend)?,
+        None => snapshot::capable(&backend, transparent)?,
     };
+    ensure!(
+        !transparent || v2,
+        "transparent payments require transparent-wallet-payments/v1 and snapshot/v2; no legacy or Ironwood fallback"
+    );
     if v2 {
-        snapshot::preflight(&backend)?;
+        snapshot::preflight(&backend, transparent)?;
         history::check_manifest(&options.history.selection()?.0)?;
     }
     let mut record = if options.operation_id.is_some() {

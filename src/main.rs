@@ -62,7 +62,7 @@ enum Commands {
         #[arg(long)]
         schema: bool,
     },
-    /// Explicit-backend keys/scans, trusted-node history export and as-of Ironwood balances.
+    /// Explicit-backend keys/scans, trusted-node history export and pool-specific balances.
     Wallet(wallet_cli::WalletArgs),
     /// Connect local applications to a private devnet through AWS Session Manager.
     Connect(connect_cli::ConnectArgs),
@@ -72,9 +72,9 @@ enum Commands {
     Rpc(connect_cli::RpcArgs),
     /// Submit an already-signed transaction once, preserving uncertain outcomes.
     Submit(connect_cli::SubmitArgs),
-    /// Fund a developer wallet with a durable, recoverable Ironwood payment.
+    /// Fund a developer wallet; Ironwood by default, explicit --pool transparent unshields funds.
     Fund(wallet_cli::payment::FundArgs),
-    /// Spend a named wallet's Ironwood funds, with durable reservations and recovery.
+    /// Send from a named wallet's selected pool, with durable reservations and recovery.
     Send(wallet_cli::payment::SendArgs),
     /// Observe transaction acceptance, canonical inclusion and local reorg history.
     Tx(wallet_cli::payment::TxArgs),

@@ -125,6 +125,149 @@ fn snapshot_payment_prepares_signs_and_recovers_exact_original_without_scan_data
 }
 
 #[test]
+fn transparent_send_and_funding_bind_pool_and_recover_original_payment() {
+    for fund in [false, true] {
+        let f = payment_fixture();
+        let command = |pool: &str, operation: Option<&str>, node: &str| {
+            let mut c = payment_command(
+                &f,
+                node,
+                if fund {
+                    &["fund", "--funding-wallet", "alice", "--wallet", "alias"]
+                } else {
+                    &["send", "--from", "alice", "--to", "alias"]
+                },
+            );
+            c.args(["--pool", pool, "--amount", "0.00000002", "--wait-secs", "1"])
+                .env("ZDN_SYNC_BACKEND", "transparent");
+            if let Some(id) = operation {
+                c.args(["--operation-id", id]);
+            }
+            c
+        };
+        let first = command("transparent", None, "accepted-lost")
+            .output()
+            .unwrap();
+        assert!(!first.status.success());
+        let first = payment_json(&first);
+        assert_eq!(first["outcome"]["kind"], "outcome_unknown");
+        let id = first["operation_id"].as_str().unwrap();
+        let scope = wallet(&f).parent().unwrap().to_owned();
+        let data = scope.join("payment-data").join(id);
+        let plan: Value =
+            serde_json::from_slice(&fs::read(data.join("plan.json")).unwrap()).unwrap();
+        let public: Value =
+            serde_json::from_slice(&fs::read(f.root.path().join("public.json")).unwrap()).unwrap();
+        assert_eq!(
+            plan["allocation"]["kind"],
+            if fund { "unshield" } else { "transparent" }
+        );
+        assert_eq!(
+            plan["allocation"]["recipient_transparent_address"],
+            public["reward_address"]
+        );
+        assert!(plan["allocation"]
+            .get("recipient_ironwood_address_hex")
+            .is_none());
+        assert_eq!(
+            plan["allocation"]["inputs"][0]["kind"],
+            if fund { "ironwood" } else { "p2pkh" }
+        );
+        let signed = fs::read(data.join("transaction.json")).unwrap();
+        let dispatches = fs::read(f.root.path().join("dispatches")).unwrap();
+        let changed = command("ironwood", Some(id), "ok").output().unwrap();
+        assert!(!changed.status.success());
+        assert!(String::from_utf8_lossy(&changed.stderr).contains("resume request differs"));
+        assert_eq!(
+            fs::read(f.root.path().join("dispatches")).unwrap(),
+            dispatches
+        );
+        fs::remove_file(wallet(&f).join("scan-v2.sqlite")).unwrap();
+        let resumed = success(command("transparent", Some(id), "ok").output().unwrap());
+        assert_eq!(resumed["txid"], first["txid"]);
+        assert_eq!(fs::read(data.join("transaction.json")).unwrap(), signed);
+        assert_eq!(
+            fs::read(f.root.path().join("dispatches")).unwrap(),
+            dispatches
+        );
+        assert_eq!(
+            fs::read_to_string(f.root.path().join("backend-calls"))
+                .unwrap()
+                .lines()
+                .filter(|s| *s == "construct-snapshot-payment")
+                .count(),
+            1
+        );
+        f.assert_rpc_closed();
+    }
+}
+
+#[test]
+fn transparent_payments_refuse_old_backends_and_mixed_or_altered_plans_before_signing() {
+    for mode in ["old", "v2", "mixed", "kind", "amount"] {
+        let f = payment_fixture();
+        let output = payment_command(
+            &f,
+            "ok",
+            &[
+                "send",
+                "--from",
+                "alice",
+                "--to",
+                "alias",
+                "--pool",
+                "transparent",
+                "--amount",
+                "0.00000002",
+                "--wait-secs",
+                "1",
+            ],
+        )
+        .env(
+            "ZDN_SYNC_BACKEND",
+            if matches!(mode, "old" | "v2") {
+                mode
+            } else {
+                "transparent"
+            },
+        )
+        .env("ZDN_TRANSPARENT_PLAN_MODE", mode)
+        .output()
+        .unwrap();
+        assert!(!output.status.success(), "accepted {mode}");
+        assert!(!f.root.path().join("dispatches").exists());
+        assert!(!fs::read_to_string(f.root.path().join("backend-calls"))
+            .unwrap_or_default()
+            .contains("construct-snapshot-payment"));
+        if matches!(mode, "old" | "v2") {
+            let balance = payment_command(
+                &f,
+                "ok",
+                &[
+                    "wallet",
+                    "balance",
+                    "--wallet",
+                    "alice",
+                    "--pool",
+                    "transparent",
+                ],
+            )
+            .env("ZDN_SYNC_BACKEND", mode)
+            .output()
+            .unwrap();
+            assert!(!balance.status.success());
+            assert!(balance.stdout.is_empty());
+            assert!(
+                String::from_utf8_lossy(&balance.stderr).contains("transparent balance requires")
+            );
+            assert!(f.calls().is_empty(), "old backend reached AWS");
+        } else {
+            f.assert_rpc_closed();
+        }
+    }
+}
+
+#[test]
 fn imported_wallet_rejects_untrusted_scan_starts_and_scans_from_genesis() {
     let f = payment_fixture();
     let imported = success(

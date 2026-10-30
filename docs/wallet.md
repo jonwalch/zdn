@@ -10,6 +10,9 @@ wallet compatibility.
 - **Make your first payment:** follow [Alice and Bob](#first-payment-alice-and-bob),
   starting with the platform and wallet-program prerequisites. It covers local
   wallet creation, reward maturity, payment confirmation and cleanup.
+- **Use transparent payments:** see [transparent sending and receiving](#transparent-sending-and-receiving).
+  This requires a matching new backend; existing released wallet binaries may
+  not advertise the required capabilities.
 - **Resume an interrupted payment:** keep the store and original operation ID;
   follow [interruption recovery](#if-interrupted-when-finished). Do not pay again
   with a new operation ID.
@@ -267,6 +270,72 @@ verified executable pin separately. Follow the README's
 [disposable-team cleanup](../README.md#4-tear-down-the-network-and-disposable-team)
 once, after stopping connections and writers. Cleanup deletes test-chain data,
 not your local keys or backups; a failed cleanup is not success.
+
+## Transparent sending and receiving
+
+**Local implementation; live-node acceptance and updated distribution remain
+unqualified.** Ironwood stays the default. Transparent mode uses the same
+network-scoped wallets, private connection, input reservations, operation IDs
+and original-transaction recovery. It adds no crypto dependency to ZDN itself.
+The separately selected backend must advertise `transparent-wallet-payments/v1`
+and snapshot-payment/v2; transparent balances also require
+`transparent-wallet-state-observation/v1`. Older backends fail closed rather
+than silently sending from another pool. The older release/source pins above
+do not imply transparent support; use an explicitly reviewed matching backend.
+
+For receiving, verify the local wallet with:
+
+```sh
+zdn wallet show demo --wallet alice
+```
+
+Its `public.reward_address` is the existing **Testnet P2PKH transparent receiving
+address**. Despite the historical field name, it also receives ordinary payments.
+Share only that public address, never the key or private wallet store. ZDN can
+send to a local recipient name or an explicit Testnet P2PKH/P2SH address;
+owned input selection and received-balance scanning support this wallet's P2PKH
+key, not imported arbitrary P2SH scripts or Mainnet funds.
+
+```sh
+zdn wallet balance demo --wallet alice --pool transparent
+zdn send demo --from alice --to bob --pool transparent --amount 0.1
+zdn wallet sync demo --wallet bob
+zdn wallet balance demo --wallet bob --pool transparent
+zdn send demo --from bob --to alice --pool transparent --amount 0.01
+```
+
+Require a confirmed outcome, then independently check Bob's balance and fresh
+spend of the received output; a transaction acknowledgement alone is not receipt.
+Transparent balance excludes **all coinbase rewards**, including mature ones.
+It reports normal confirmed UTXOs, pending receipts/spends and existing local
+reservations. `--confirmed-only` leaves current classifications unknown rather
+than claiming spendability. `wallet rewards` remains the coinbase inventory.
+
+### Funding transparent balances from mined rewards
+
+Zcash requires a transparent coinbase output's first spend to have no transparent
+outputs, including change, even after 100-block maturity. This is not a new ZDN
+policy. To start with mined rewards, shield them with the existing default
+`fund`, then explicitly unshield into a transparent wallet:
+
+```sh
+zdn fund demo --funding-wallet funding --wallet funding --amount 1
+zdn fund demo --funding-wallet funding --wallet alice --pool transparent --amount 0.5
+```
+
+Wait for each payment's confirmation before the next step. The second command
+requires sufficient existing Ironwood funds; it never spends coinbase directly
+or silently switches input pools. **Its change is transparent to the sender:**
+the entire selected Ironwood input value, less the fee, leaves the shielded pool,
+not only Alice's requested amount. Transparent sends then spend normal P2PKH
+UTXOs with transparent change and need no shielded proof. Funding from Ironwood
+still generates a real shielded proof in the trusted local backend.
+
+On interruption, retain the complete wallet store and repeat the **same pool**,
+sender, recipient, amount and fee with `--operation-id ORIGINAL_UUID`. Do not
+create a fresh operation to work around an unknown outcome, switch pools on
+resume or replace original signed bytes. No live-node, proof-generation or AWS
+run is authorized by these instructions; follow the repository approval rules.
 
 ## Advanced reference: backend, storage and recovery
 
@@ -684,11 +753,13 @@ zdn tx demo TRANSACTION_ID
 All accept `--wallet-dir ROOT` for the same local store. `rewards` reports owned
 unspent P2PKH coinbase outpoints, values, mined heights, target-height maturity,
 mempool spends and local reservations; it does not invent available inventory.
-`fund` prefers sufficient eligible Ironwood notes; otherwise it shields only owned
+With the default `--pool ironwood`, `fund` prefers sufficient eligible Ironwood notes; otherwise it shields only owned
 mature P2PKH rewards. It never mixes input pools. `send` uses only the named
 sender's Ironwood notes. Both use deterministic largest-first selection bounded to
 32 inputs, Ironwood recipient outputs and internal-scope Ironwood change. They
-never fall back to another pool, another wallet or transparent change.
+never fall back to another pool, another wallet or transparent change. Explicit
+`--pool transparent` has the distinct behavior and capability requirements
+described in [transparent sending and receiving](#transparent-sending-and-receiving).
 
 Amounts are decimal ZEC with at most eight fractional places, parsed to integer
 zatoshis without floats. `--fee-zat` is an optional explicit integer fee; otherwise
