@@ -41,6 +41,8 @@ pub mod lightwallet_image;
 pub mod lightwallet_service;
 pub mod package;
 pub mod participant;
+#[cfg(target_os = "linux")]
+pub mod public_chain_adapter;
 pub mod releases;
 pub mod removal;
 pub mod ssm;
