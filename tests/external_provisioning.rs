@@ -1,5 +1,5 @@
 #![cfg(target_os = "linux")]
-//! Structural/argv tests only: no executable, node, Docker or cloud work.
+//! Local data/argv tests only: no executable, node, Docker or cloud work.
 use serde_json::json;
 use zdn::{
     devnet::{
@@ -150,6 +150,98 @@ fn fixture() -> identity::Manifest {
     };
     manifest.validate().unwrap();
     manifest
+}
+
+#[test]
+fn helper_authentication_checks_all_bytes_format_trust_and_interruption() {
+    use std::{
+        fs,
+        os::unix::fs::{symlink, MetadataExt, PermissionsExt},
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
+    };
+    use zdn::host::files::Directory;
+
+    let root = tempfile::tempdir().unwrap();
+    let inputs = root.path().join("inputs");
+    fs::create_dir(&inputs).unwrap();
+    let directory = Directory::open(&inputs, fs::metadata(&inputs).unwrap().uid()).unwrap();
+    let path = inputs.join("zdn");
+    let mut bytes = vec![0xa5; 65537];
+    bytes[..64].fill(0);
+    bytes[..4].copy_from_slice(b"\x7fELF");
+    bytes[4..6].copy_from_slice(&[2, 1]);
+    bytes[16..20].copy_from_slice(&[2, 0, 62, 0]);
+    bytes[65536] = 0x3c;
+    fs::write(&path, &bytes).unwrap();
+    // Delivered public artifacts are not executable; authentication must not
+    // require the running helper's mode or change this immutable source.
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut objects = fixture().sources;
+    objects.host_helper.bytes = bytes.len() as u64;
+    // Independent Python hashlib pin, including the byte beyond the 64 KiB chunk.
+    objects.host_helper.sha256 =
+        "c35b61240e5c3e3c334d70e2c2591c6dacd1dfa2c025ae90e797a4c24cba7abf".into();
+    let cancelled = AtomicBool::new(false);
+    let verify = |objects: &Objects| {
+        objects.verify_helper(
+            &directory,
+            Instant::now() + Duration::from_secs(5),
+            &cancelled,
+        )
+    };
+    verify(&objects).unwrap();
+
+    let mut changed = bytes.clone();
+    changed[65536] ^= 1;
+    for bad in [
+        changed,
+        bytes[..65536].to_vec(),
+        [bytes.as_slice(), &[0]].concat(),
+    ] {
+        fs::write(&path, bad).unwrap();
+        assert!(verify(&objects).is_err());
+    }
+    // Even an independently re-pinned payload must still be a supported ELF.
+    let mut invalid_format = bytes.clone();
+    invalid_format[4] = 1;
+    fs::write(&path, invalid_format).unwrap();
+    let mut wrong = objects.clone();
+    wrong.host_helper.sha256 =
+        "7fc2cc060c963adc744611c457c5ab3f5029d6d68416704f5963f33059f67498".into();
+    assert!(verify(&wrong).is_err());
+    fs::write(&path, &bytes).unwrap();
+    assert!(objects
+        .verify_helper(
+            &directory,
+            Instant::now() - Duration::from_secs(1),
+            &cancelled
+        )
+        .is_err());
+    assert!(objects
+        .verify_helper(
+            &directory,
+            Instant::now() + Duration::from_secs(5),
+            &AtomicBool::new(true),
+        )
+        .is_err());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o620)).unwrap();
+    assert!(verify(&objects).is_err());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::rename(&path, inputs.join("valid-helper")).unwrap();
+    symlink("valid-helper", &path).unwrap();
+    assert!(verify(&objects).is_err());
+    fs::remove_file(&path).unwrap();
+    fs::rename(inputs.join("valid-helper"), &path).unwrap();
+
+    // Renaming/replacing the anchor must not redirect descriptor-relative reads.
+    let retained = root.path().join("retained");
+    fs::rename(&inputs, &retained).unwrap();
+    fs::create_dir(&inputs).unwrap();
+    fs::write(inputs.join("zdn"), b"untrusted replacement").unwrap();
+    verify(&objects).unwrap();
+    assert_eq!(fs::read(retained.join("zdn")).unwrap(), bytes);
+    assert_eq!(fs::read_dir(&retained).unwrap().count(), 1);
 }
 
 #[test]

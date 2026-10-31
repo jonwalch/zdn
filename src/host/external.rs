@@ -7,7 +7,7 @@
 use super::{
     artifact_delivery::{self, Delivery},
     command::Executor,
-    files::Directory,
+    files::{self, Directory},
     S3Object,
 };
 use crate::public_chain_adapter::{
@@ -18,7 +18,7 @@ use eyre::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -220,6 +220,35 @@ impl Objects {
             ("zdn", &self.host_helper, crate::devnet::MAX_HELPER_BYTES),
         ]
     }
+
+    /// Authenticate the fixed helper leaf without retaining or snapshotting it.
+    /// Adapter preparation consumes only the public chain and adapter slots.
+    pub fn verify_helper(
+        &self,
+        artifacts: &Directory,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
+        let expected = &self.host_helper;
+        expected.validate()?;
+        ensure!(
+            expected.bytes <= crate::devnet::MAX_HELPER_BYTES,
+            "external helper exceeds bound"
+        );
+        let mut file = artifacts.regular("zdn", expected.bytes)?;
+        let actual = files::digest_file(&mut file, expected.bytes, &mut || {
+            ensure!(
+                Instant::now() < deadline && !cancelled.load(Ordering::Relaxed),
+                "external helper verification interrupted"
+            );
+            Ok(())
+        })?;
+        ensure!(
+            actual.bytes == expected.bytes && actual.sha256 == expected.sha256,
+            "external helper differs"
+        );
+        crate::devnet::validate_helper(&actual.prefix)
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -372,8 +401,9 @@ impl Manifest {
         Ok(())
     }
 
-    /// Host install/update/recovery pre-effect gate. Inputs are copied only
-    /// from descriptor-relative authenticated fixed leaves to a fresh snapshot.
+    /// Host install/update/recovery pre-effect gate. Adapter inputs are copied
+    /// from descriptor-relative authenticated fixed leaves to a fresh snapshot;
+    /// the helper is authenticated in bounded chunks and is not snapshotted.
     /// Retain the returned gate for startup/bootstrap/readiness/production.
     #[cfg_attr(
         feature = "profiling",
@@ -408,11 +438,13 @@ impl Manifest {
                     == self.trust.adapter_selection_sha256,
             "package adapter and explicit host trust differ"
         );
+        self.objects.verify_helper(artifacts, deadline, cancelled)?;
         let snapshot = tempfile::tempdir()?;
         for (name, object, _) in self.objects.slots() {
-            std::fs::write(snapshot.path().join(name), read(artifacts, name, object)?)?;
+            if name != "zdn" {
+                std::fs::write(snapshot.path().join(name), read(artifacts, name, object)?)?;
+            }
         }
-        crate::devnet::validate_helper_file(&snapshot.path().join("zdn"))?;
         let chain = PreparedExternalChain::prepare_isolated(
             &read(artifacts, "package.json", &o.package)?,
             snapshot.path(),
