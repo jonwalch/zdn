@@ -168,8 +168,8 @@ impl ProducerOptions {
         );
         ensure!(
             self.max_duration
-                .is_none_or(|d| !d.is_zero() && d <= Duration::from_secs(3600)),
-            "producer duration must be positive and at most one hour"
+                .is_none_or(|d| !d.is_zero() && d <= Duration::from_secs(7200)),
+            "producer duration must be positive and at most two hours"
         );
         ensure!(
             !self.unpaced || self.max_blocks.is_some(),

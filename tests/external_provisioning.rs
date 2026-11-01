@@ -575,7 +575,19 @@ fn first_launch_limits_are_optional_canonical_and_bound_to_config_and_request() 
             .unwrap(),
         bytes
     );
-    for (height, seconds) in [(0, 600), (1, 0), (1, 3601)] {
+    for seconds in [3601, 7200] {
+        request.production_limits.as_mut().unwrap().lifetime_seconds = seconds;
+        let bytes = request.bytes().unwrap();
+        assert_eq!(
+            ExternalRequest::from_slice(&bytes)
+                .unwrap()
+                .production_limits
+                .unwrap()
+                .lifetime_seconds,
+            seconds
+        );
+    }
+    for (height, seconds) in [(0, 600), (1, 0), (1, 7201)] {
         request.production_limits = Some(ExternalProductionLimits {
             max_height: height,
             lifetime_seconds: seconds,
@@ -591,17 +603,24 @@ fn first_launch_limits_are_optional_canonical_and_bound_to_config_and_request() 
 fn first_launch_activation_and_deadline_survive_service_and_image_restarts() {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use zdn::{chain::producer::ProducerOptions, host::external::runtime::ProductionAdmission};
-    let runtime = limited_producer();
+    let mut runtime = limited_producer();
+    runtime.production_limits.as_mut().unwrap().lifetime_seconds = 7200;
     let (root, directory) = production_directory();
     assert!(ProductionAdmission::load(&runtime, &directory).is_err());
     runtime.activate_production(&directory).unwrap();
+    let mut fresh = ProducerOptions::new(root.path().join("producer"), runtime.producer_identity());
+    ProductionAdmission::load(&runtime, &directory)
+        .unwrap()
+        .constrain(&mut fresh);
+    assert!(fresh.max_duration.unwrap() > Duration::from_secs(3600));
+    assert!(fresh.max_duration.unwrap() <= Duration::from_secs(7200));
     let path = root.path().join("production-activation.json");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
     // Age the retained fixture without sleeping or invoking a real service.
-    set_activation_times(&path, now - 100, now + 500);
+    set_activation_times(&path, now - 6700, now + 500);
     let bytes = std::fs::read(&path).unwrap();
     directory
         .publish(

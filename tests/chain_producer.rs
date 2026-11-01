@@ -431,6 +431,13 @@ fn duration_ceiling_stops_before_a_tick_and_counts_time_spent_generating() {
         assert_eq!(fixture.run().unwrap()["confirmedBlocks"], expected);
         assert_eq!(fixture.node.generate_times().len(), expected);
     }
+    for (seconds, expected) in [(3601, 2), (7200, 3)] {
+        let mut fixture = Fixture::new(5);
+        fixture.options.interval = Duration::from_secs(1800);
+        fixture.options.max_duration = Some(Duration::from_secs(seconds));
+        assert_eq!(fixture.run().unwrap()["confirmedBlocks"], expected);
+        assert_eq!(fixture.node.generate_times().len(), expected);
+    }
     let mut fixture = Fixture::new(5);
     fixture.options.unpaced = true;
     fixture.options.max_duration = Some(Duration::from_secs(2));
@@ -445,7 +452,7 @@ fn duration_ceiling_stops_before_a_tick_and_counts_time_spent_generating() {
 
 #[test]
 fn invalid_duration_refuses_before_state_or_rpc() {
-    for duration in [Duration::ZERO, Duration::from_secs(3601)] {
+    for duration in [Duration::ZERO, Duration::from_secs(7201)] {
         let mut fixture = Fixture::new(1);
         fixture.options.max_duration = Some(duration);
         assert!(fixture.run().is_err());
