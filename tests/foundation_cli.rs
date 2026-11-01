@@ -1188,6 +1188,7 @@ fn status_handles_large_instance_metadata_and_exposes_the_operation_while_locked
 printf '%s\n' "$*" >> aws-calls.txt
 case "$*" in
   --version) printf 'aws-cli/2.37.4 Python/3.13 fixture\n' ;;
+  *'configure export-credentials'*) printf '%s\n' '{"Version":1,"AccessKeyId":"fixture-key","SecretAccessKey":"fixture-secret","SessionToken":"fixture-token","Expiration":"2099-01-01T00:00:00Z"}' ;;
   *'sts get-caller-identity'*) printf '{"Account":"123456789012","Arn":"arn:aws:sts::123456789012:assumed-role/%s/fixture","UserId":"fixture"}' "$ZDN_FIXTURE_ROLE" ;;
   *'s3api get-object'*) printf 'An error occurred (NoSuchKey) when calling the GetObject operation: fixture\n' >&2; exit 254 ;;
   *'ec2 describe-instances'*)

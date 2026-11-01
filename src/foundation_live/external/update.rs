@@ -662,12 +662,27 @@ pub(super) fn preflight<A: AwsApi, R: PulumiRunner, T: Runtime>(
             .get(node)
             .context("external update node missing")?;
         backend.poll()?;
-        let response = backend.aws.call(
+        // These independent reads still precede every effect. Validate both
+        // responses below, including the exact saved host/volume attachment.
+        let responses = backend.aws.batch_call(
             "ec2",
-            "describe-instances",
-            json!({"InstanceIds":[target.instance_id]}),
-            &[],
+            &[
+                aws::AwsCall {
+                    operation: "describe-instances",
+                    input: json!({"InstanceIds":[target.instance_id]}),
+                    extra_args: vec![],
+                },
+                aws::AwsCall {
+                    operation: "describe-volumes",
+                    input: json!({"VolumeIds":[target.volume_id]}),
+                    extra_args: vec![],
+                },
+            ],
         )?;
+        let [instance_response, volume_response]: [_; 2] = responses
+            .try_into()
+            .map_err(|_| eyre::eyre!("incomplete external host preflight batch"))?;
+        let response = instance_response?;
         let reservations = array(&response, "Reservations")?;
         ensure!(
             response.get("NextToken").is_none() && reservations.len() == 1,
@@ -704,12 +719,7 @@ pub(super) fn preflight<A: AwsApi, R: PulumiRunner, T: Runtime>(
             );
         }
         backend.poll()?;
-        let response = backend.aws.call(
-            "ec2",
-            "describe-volumes",
-            json!({"VolumeIds":[target.volume_id]}),
-            &[],
-        )?;
+        let response = volume_response?;
         let volumes = array(&response, "Volumes")?;
         ensure!(
             response.get("NextToken").is_none()

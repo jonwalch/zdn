@@ -306,7 +306,6 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
         node: &str,
     ) -> Result<()> {
         self.poll()?;
-        aws::verify_identity(&self.aws, &self.selection)?;
         aws::verify_backend(&self.aws, &self.selection, &deployment.team)?;
         update::preflight(self, deployment, &[node.into()])
     }
