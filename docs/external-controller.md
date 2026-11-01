@@ -1,10 +1,23 @@
 # External deployment controller (local implementation)
 
 This is the Linux-only operational controller branch for the public contracts in
-[external-chain-offline.md](external-chain-offline.md). It is not a live AWS,
-host, bootstrap, payment or release qualification. No new live test is authorized
-by these commands or this document. Ordinary deployments still use their
-original in-process contracts and omit the external saved-deployment field.
+[external-chain-offline.md](external-chain-offline.md). For the opt-in Linux TPQ
+profile and complete starter walkthrough, begin with [TPQ preview](tpq-preview.md).
+This contract document is not release qualification or permission to run a new
+live test. Ordinary deployments still use their original in-process contracts
+and omit the external saved-deployment field. Mac ordinary behavior is unchanged;
+external execution remains Linux-only.
+
+R8 (2026-11-01) passed the actual two-node AWS source-build/deployment journey in
+55.85 minutes: one funding, v5/v6/restored-v6 payments, one retained node-only
+restart per node and original gateway continuity. Staged/final independent
+cleanup passed 229/228 observations across 57 protected keys and 17 regions.
+These are selected analog PAY-01, happy-path PAY-02, WAL-08, JRN-06 and CLN-01/03
+subcases of beta plan v1.0 / 2026-10-23, SHA-256
+`20bc7e52be2df2d78706d5e4c453bfa91e42feefcad83d550c5a1abc31a499d2`.
+No lost-reply injection, image update, host reboot or handoff was tested in R8.
+Full beta and clean-user release-profile rehearsal remain pending. Historical
+development evidence does not qualify rebuilt or post-processed release bytes.
 
 ## Public selection and commands
 
@@ -17,6 +30,15 @@ companion on PATH. The config's external package/selection pins must agree;
 an installed executable or package self-declaration never grants trust.
 `--external-trust` is the `CoreTrust` JSON object: `package` and `executable`
 byte/hash pins plus `adapterSelectionSha256`. No wallet/key material is accepted.
+
+The TPQ starter supplies `external.yaml` and `core-trust.json.in`. The trust
+shape is exactly `{"package":{"bytes":N,"sha256":"HASH"},
+"adapterSelectionSha256":"HASH","executable":{"bytes":N,"sha256":"HASH"}}`.
+Replace `N`/`HASH` only after independent review of the package and authenticated
+distribution executable. Package self-declarations and co-downloaded checksums
+are not publisher authentication. The adapter selection, native fingerprint,
+raw package hash and semantic config fingerprint are distinct identities.
+Do not use the raw YAML file hash as `Config::fingerprint`.
 
 ```sh
 # First source image: external.yaml selects node.source.path and node.build.
@@ -217,12 +239,27 @@ Completed results are reused only after local binding validation. Handoff
 preserves control intents, scripts, operation receipts and command journals,
 including observations of older confirmed image revisions.
 
+For auditable selection, use the root `--format json` option and save each
+preparation result to a new private file. Its `data` contains `controlId`,
+`networkId`, `nodeId`, `request`, `runtime`, `intent` and `dispatched:false`.
+Review `intent.request.action` and those pins before resuming the returned ID.
+Execution returns `data.observation` bound to the original request pin, effective
+runtime pin, deployment ID, node ID and native inventory. ZDN checks these
+bindings even for a saved completed result. Inspect `observation.result`; exit
+zero, the outer control ID or `paymentQualification:pending` is not confirmation
+of a payment. Fresh observations need new read IDs, not replay of an old read.
+Prepare-only does not dispatch, and `--resume` never opens a replacement action
+file. Keep the original ID on an uncertain mutation; never delete its fence.
+
 External config `chain.productionLimits: {maxHeight: 121,
-lifetimeSeconds: 3600}` pins an optional absolute height and first-activation
-lifetime before launch. Lifetime must be 1–3600 seconds. The authenticated
+lifetimeSeconds: 7200}` pins an optional absolute height and first-activation
+lifetime before launch. Lifetime must be 1–7200 seconds when explicitly set;
+this is not a default producer expiry or a global ZDN lifetime. The authenticated
 producer activation publishes one retained, create-only deadline before startup;
 service/image restart never renews it. Scheduled and qualification production
-intersect their invocation limits with these immutable ceilings. Missing,
+intersect their invocation limits with these immutable ceilings. The shared
+producer accepts an explicit per-invocation duration up to 7200 seconds too;
+neither limit supplies a duration when omitted. Missing,
 expired or future activation fails closed for new generation, while existing
 pending generation can still reconcile. Deadline expiry cannot retract an
 already-dispatched RPC. Omitted limits preserve legacy serialized bytes and
@@ -235,10 +272,12 @@ opposite-peer submission/raw node-2 transaction evidence rather than fabricating
 a second participant gateway. Live dispatch is disabled unless explicitly opted
 in by its caller; that flag does not grant AWS approval.
 
-**Remaining before AWS execution:** real host/systemd behavior, a fresh
-real-node continuity run, exact candidate/resource/cost pins, complete lifecycle
-composition and scoped AWS approval. Offline tests are not live qualification.
-Do not execute generated scripts manually to bypass saved admission/journals.
+**Remaining for release qualification:** candidate-specific distributed executable
+and ABI checks, a clean-user rehearsal from the final assets/instructions, and
+all excluded fault/update/handoff/full-beta gates. R8 established real host and
+node/gateway continuity only for its pinned development candidate, not future
+release bytes. Every new live run still needs scoped approval and resource/cost
+bounds. Do not execute scripts manually to bypass saved admission/journals.
 
 ## Validation and remaining integration boundaries
 
