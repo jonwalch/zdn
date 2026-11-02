@@ -1,5 +1,9 @@
 # Linux TPQ experimental preview
 
+**Preview 5 downloads:** see [the exact release pins, R4 results and limits](tpq-preview5.md).
+Start with that release's `START-TPQ.md`; its current status supersedes historical
+pending-rehearsal statements in the unchanged bundled source guides.
+
 This is the opt-in Linux x86-64 companion-tool path, not ordinary ZDN Preview 4.
 Use the canonical TPQ walkthrough supplied as **START-TPQ.md** and retained at
 `docs/slh-dsa-b128s/zdn.md` in the TPQ documentation/source archive. Its static
