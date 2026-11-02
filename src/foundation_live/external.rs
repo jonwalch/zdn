@@ -18,6 +18,13 @@ pub mod health;
 pub mod qualification;
 pub mod update;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProducerReadiness {
+    Unchecked,
+    Active,
+    ActiveOrExpired,
+}
+
 /// Existing native build cleanup admission, not adapter compatibility. Never
 /// destroy around an active/unknown billed build or submit work to settle it.
 #[cfg_attr(
@@ -515,7 +522,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
         if !evidence.active_images.is_empty() {
             // Installed revisions keep their original manifest/volume authority.
             // Up never republishes or reinstalls the old first-launch image.
-            return self.observe_external(deployment, true);
+            return self.observe_external(deployment, ProducerReadiness::Active);
         }
         for node in outputs.nodes.values() {
             if evidence.pending_identity.as_deref() != Some(node.node_id.as_str())
@@ -662,7 +669,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
         }
         // A fresh cohort observation, not the cached install replies, gates the
         // sole producer action. Its own SSM record remains durable on recovery.
-        self.observe_external(deployment, false)?;
+        self.observe_external(deployment, ProducerReadiness::Unchecked)?;
         let (node, runtime) = runtimes
             .iter()
             .find(|(node, _)| node.node_id == "node-1")
@@ -708,7 +715,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
     pub(super) fn observe_external(
         &mut self,
         deployment: &Deployment,
-        producer: bool,
+        producer: ProducerReadiness,
     ) -> Result<Value> {
         validate_saved(deployment, &self.deployment_directory)?;
         let (_, evidence) = load_inventory(deployment, &self.deployment_directory)?;
@@ -755,8 +762,14 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
                 &evidence,
                 &runtime,
             )?;
-            validate_observation(&effective, &value, producer && node.node_id == "node-1")?;
-            if producer && node.node_id == "node-1" {
+            let require_producer =
+                producer != ProducerReadiness::Unchecked && node.node_id == "node-1";
+            if require_producer && producer == ProducerReadiness::ActiveOrExpired {
+                validate_update_observation(&effective, &value)?;
+            } else {
+                validate_observation(&effective, &value, require_producer)?;
+            }
+            if require_producer {
                 let gateway_journal = self.deployment_directory.join(format!(
                     "node-1-external-gateway-observe-{}.json",
                     Uuid::new_v4()
@@ -771,8 +784,12 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
             }
             observations.insert(node.node_id.clone(), value);
         }
+        let scheduled = producer != ProducerReadiness::Unchecked
+            && observations
+                .get("node-1")
+                .is_some_and(|value| !value["producer"].is_null());
         Ok(
-            json!({"nodes":observations,"scheduledProducer":producer,"nativeInventory":evidence.inventory}),
+            json!({"nodes":observations,"scheduledProducer":scheduled,"nativeInventory":evidence.inventory}),
         )
     }
 }
@@ -795,6 +812,21 @@ pub fn validate_observation(runtime: &RuntimeRequest, value: &Value, producer: b
         );
     }
     Ok(())
+}
+
+/// Update completion alone may settle with a stopped, lifetime-exhausted
+/// producer. The same bound host/native readiness and separate gateway check
+/// are still mandatory; ordinary launch/health keep requiring active ownership.
+pub fn validate_update_observation(runtime: &RuntimeRequest, value: &Value) -> Result<()> {
+    if value["productionExpired"].is_null() {
+        return validate_observation(runtime, value, true);
+    }
+    validate_observation(runtime, value, false)?;
+    ensure!(
+        value.get("producer") == Some(&Value::Null),
+        "expired producer must be stopped"
+    );
+    runtime.validate_expired_production(&value["productionExpired"])
 }
 
 fn validate_gateway(runtime: &RuntimeRequest, value: &Value) -> Result<()> {

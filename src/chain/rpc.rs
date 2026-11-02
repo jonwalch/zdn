@@ -11,7 +11,7 @@ use std::{
     io::{self, Read, Write},
     net::{IpAddr, SocketAddr},
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -76,6 +76,39 @@ pub trait NodeRpc: Send + Sync {
 pub trait Clock {
     fn elapsed(&self) -> Duration;
     fn sleep(&self, duration: Duration);
+}
+
+/// Fence in-process RPC work with its caller's original cumulative deadline.
+/// Checking after a response also prevents late success from authorizing the
+/// next effect or a completion receipt. An uncertain mutation is never retried
+/// by this transport wrapper.
+pub struct DeadlineRpc<'a, R, C> {
+    pub rpc: &'a R,
+    pub clock: &'a C,
+    pub cancelled: &'a AtomicBool,
+    pub deadline: Duration,
+}
+
+impl<R, C: Clock> DeadlineRpc<'_, R, C> {
+    pub fn remaining(&self) -> Result<Duration, RpcError> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(RpcError::Protocol("node RPC action cancelled".into()));
+        }
+        self.deadline
+            .checked_sub(self.clock.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| RpcError::Protocol("node RPC action deadline reached".into()))
+    }
+}
+
+impl<R: NodeRpc, C: Clock + Sync> NodeRpc for DeadlineRpc<'_, R, C> {
+    fn call(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+        let result = self
+            .rpc
+            .call(method, params, timeout.min(self.remaining()?));
+        self.remaining()?;
+        result
+    }
 }
 
 pub struct SystemClock(Instant);

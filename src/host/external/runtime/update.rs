@@ -167,6 +167,33 @@ fn advance(
         .advance(request.update_id, phase)
 }
 
+/// Restore availability after target readiness and release of maintenance.
+/// Expiry is authenticated from retained state, not inferred from a failed
+/// startup. Callers must verify the stopped service before settling the journal.
+pub fn restore_services(
+    target: &Manifest,
+    node: &Directory,
+    mut action: impl FnMut(Operation) -> Result<()>,
+    mut stop_producer: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    if target.provisioning.node_id == "node-1" {
+        action(Operation::GatewayInstall)?;
+    }
+    if target.block_interval_seconds.is_some() {
+        if target.expired_production(node)?.is_none() {
+            let started = action(Operation::StartProducer);
+            // Expiry can cross during startup as well as during the build.
+            if target.expired_production(node)?.is_none() {
+                started?;
+            }
+        }
+        if target.expired_production(node)?.is_some() {
+            stop_producer()?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(skip_all, name = "host.external.runtime.update.dispatch")
@@ -350,30 +377,37 @@ pub fn dispatch(request: &Request, config: Config<'_>, cancelled: &AtomicBool) -
     Journal::open(&journal, original, &mut installation)?.release_maintenance(request.update_id)?;
     drop(installation);
     let released = (|| {
-        if original.block_interval_seconds.is_some() {
-            control::dispatch(
-                original,
-                Config {
-                    root: config.root,
-                    owner: config.owner,
-                    node_owner: config.node_owner,
-                },
-                Operation::StartProducer,
-                cancelled,
-            )?;
-        }
-        if original.provisioning.node_id == "node-1" {
-            control::dispatch(
-                original,
-                Config {
-                    root: config.root,
-                    owner: config.owner,
-                    node_owner: config.node_owner,
-                },
-                Operation::GatewayInstall,
-                cancelled,
-            )?;
-        }
+        restore_services(
+            &request.target,
+            &node,
+            |operation| {
+                control::dispatch(
+                    original,
+                    Config {
+                        root: config.root,
+                        owner: config.owner,
+                        node_owner: config.node_owner,
+                    },
+                    operation,
+                    cancelled,
+                )
+                .map(|_| ())
+            },
+            || {
+                control::systemctl(
+                    &config,
+                    &mut executor,
+                    cancelled,
+                    &["stop", "zdn-producer.service"],
+                    35,
+                )?;
+                crate::host::producer::require_service_stopped(
+                    &config.tool("systemctl")?,
+                    &mut executor,
+                    cancelled,
+                )
+            },
+        )?;
         advance(&journal, request, &config, Phase::Done)
     })();
     if released.is_err() {

@@ -395,6 +395,112 @@ fn full_bundle_is_decoded_before_mutation_and_success_is_actual_checkpoint_histo
 }
 
 #[test]
+fn action_fence_stops_bootstrap_effects_and_late_completion_without_retrying() {
+    use std::sync::atomic::AtomicBool;
+    use zdn::chain::rpc::DeadlineRpc;
+
+    struct Interrupted<'a> {
+        node: &'a FakeNode,
+        cancel: &'a AtomicBool,
+        stage: &'a str,
+        expire: bool,
+    }
+    impl NodeRpc for Interrupted<'_> {
+        fn call(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+            let result = self.node.call(method, params, timeout);
+            let stop = match self.stage {
+                "inspection" => method == "inspectchainblock",
+                "reconciliation" => method == "getblockhash" && self.node.submissions() > 0,
+                "completion" => {
+                    method == "getchainrules" && self.node.state.lock().unwrap().rule_reads == 2
+                }
+                _ => false,
+            };
+            if stop {
+                if self.expire {
+                    self.node.clock.sleep(Duration::from_millis(50));
+                } else {
+                    self.cancel.store(true, Ordering::SeqCst);
+                }
+            }
+            result
+        }
+    }
+
+    for stage in ["inspection", "reconciliation", "completion", "success"] {
+        for expire in [false, true] {
+            let fixture = Fixture::new(3);
+            let clock = FakeClock::default();
+            clock.sleep(Duration::from_millis(200));
+            let node = fixture.node(&clock);
+            // An uncertain successful mutation must be reconciled on a later
+            // invocation, not dispatched again after cancellation/expiry.
+            if stage == "reconciliation" {
+                node.state
+                    .lock()
+                    .unwrap()
+                    .submissions
+                    .push_back(Submission::Commit(Err(RpcError::Transport(
+                        "response lost".into(),
+                    ))));
+            }
+            let cancel = AtomicBool::new(false);
+            let interrupted = Interrupted {
+                node: &node,
+                cancel: &cancel,
+                stage,
+                expire,
+            };
+            let rpc = DeadlineRpc {
+                rpc: &interrupted,
+                clock: &clock,
+                cancelled: &cancel,
+                deadline: Duration::from_millis(250),
+            };
+            let result =
+                load_seed_history(&fixture.manifest, &fixture.bundle, &rpc, &clock, &options());
+            let expected_blocks = match stage {
+                "inspection" => 0,
+                "reconciliation" => 1,
+                _ => 3,
+            };
+            assert_eq!(
+                node.state.lock().unwrap().chain.len(),
+                expected_blocks,
+                "{stage}"
+            );
+            if stage == "success" {
+                assert!(result.unwrap().seed_history_present);
+            } else {
+                assert!(result.is_err(), "late bootstrap completion at {stage}");
+                assert!(rpc.remaining().is_err());
+            }
+            assert!(node
+                .state
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|(_, _, timeout)| *timeout <= Duration::from_millis(50)));
+            if stage == "reconciliation" {
+                let report = load_seed_history(
+                    &fixture.manifest,
+                    &fixture.bundle,
+                    &node,
+                    &clock,
+                    &options(),
+                )
+                .unwrap();
+                assert_eq!(report.already_present_blocks, 1);
+                assert_eq!(report.submitted_blocks, 2);
+                assert_eq!(node.state.lock().unwrap().chain.len(), 3);
+                assert_eq!(node.submissions(), 3);
+            }
+        }
+    }
+}
+
+#[test]
 fn restarted_loader_reobserves_prefix_and_submits_only_missing_bytes() {
     let fixture = Fixture::new(3);
     let clock = FakeClock::default();

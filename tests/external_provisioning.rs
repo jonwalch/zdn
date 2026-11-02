@@ -743,6 +743,129 @@ fn first_launch_expired_or_future_activation_blocks_generate_but_allows_reconcil
 }
 
 #[test]
+fn image_update_restores_gateway_after_expiry_without_renewing_production() {
+    use std::{
+        cell::Cell,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use zdn::{
+        foundation_live::external::{validate_observation, validate_update_observation},
+        host::external::runtime::{control::Operation, update::restore_services},
+    };
+    // Expired before restart, expires during restart, still valid, unrelated
+    // startup failure, and failed stopped-service verification.
+    for (expired, cross_during_start, start_fails, stop_fails) in [
+        (true, false, false, false),
+        (false, true, true, false),
+        (false, false, false, false),
+        (false, false, true, false),
+        (true, false, false, true),
+    ] {
+        let original = limited_producer();
+        let target = revision_fixture(&original).target;
+        let (root, directory) = production_directory();
+        original.activate_production(&directory).unwrap();
+        directory
+            .publish(
+                "producer-authorized.json",
+                &original.producer_authorization().unwrap(),
+                0o600,
+            )
+            .unwrap();
+        let path = root.path().join("production-activation.json");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if expired {
+            set_activation_times(&path, now - 700, now - 100);
+        }
+        let gateway_ready = Cell::new(false);
+        let producer_running = Cell::new(false);
+        let result = restore_services(
+            &target,
+            &directory,
+            |operation| {
+                match operation {
+                    Operation::GatewayInstall => gateway_ready.set(true),
+                    Operation::StartProducer => {
+                        assert!(
+                            gateway_ready.get(),
+                            "gateway recovery must not wait for production"
+                        );
+                        if cross_during_start {
+                            set_activation_times(&path, now - 700, now - 100);
+                        }
+                        if start_fails {
+                            eyre::bail!("fixture startup failure");
+                        }
+                        assert!(!expired, "exhausted production must not restart");
+                        producer_running.set(true);
+                    }
+                    _ => panic!("unexpected restoration action"),
+                }
+                Ok(())
+            },
+            || {
+                if stop_fails {
+                    eyre::bail!("fixture service still running");
+                }
+                producer_running.set(false);
+                Ok(())
+            },
+        );
+        assert!(gateway_ready.get());
+        assert_eq!(
+            result.is_ok(),
+            !stop_fails && (!start_fails || cross_during_start)
+        );
+        assert_eq!(
+            producer_running.get(),
+            !expired && !cross_during_start && !start_fails
+        );
+        let activation = std::fs::read(&path).unwrap();
+        target.activate_production(&directory).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            activation,
+            "update must retain original lifetime"
+        );
+        if expired || cross_during_start {
+            let expiration = target.expired_production(&directory).unwrap().unwrap();
+            let response = json!({"observation":target.observation("ready").unwrap(),
+                "readiness":{"apiVersion":zdn::chain::readiness::API_VERSION,
+                    "consensusFingerprint":target.provisioning.native_fingerprint,"role":"producer",
+                    "effectiveRulesVerified":true,"historyPresent":true,"miningReady":true,"launchReady":false},
+                "producer":null,"productionExpired":expiration});
+            validate_update_observation(&target, &response).unwrap();
+            assert!(
+                validate_observation(&target, &response, true).is_err(),
+                "initial launch must stay strict"
+            );
+            let mut wrong = response.clone();
+            wrong["productionExpired"]["authorization"] = json!(Pin::of(b"foreign authorization"));
+            assert!(validate_update_observation(&target, &wrong).is_err());
+            wrong = response.clone();
+            wrong["productionExpired"]["activatedUnixSeconds"] = json!(now + 100);
+            wrong["productionExpired"]["deadlineUnixSeconds"] = json!(now + 700);
+            assert!(
+                validate_update_observation(&target, &wrong).is_err(),
+                "future activation is not exhaustion"
+            );
+            wrong = response.clone();
+            wrong["producer"] = json!({"phase":"generating"});
+            assert!(validate_update_observation(&target, &wrong).is_err());
+            wrong = response.clone();
+            wrong["readiness"]["historyPresent"] = json!(false);
+            assert!(validate_update_observation(&target, &wrong).is_err());
+            wrong = response;
+            wrong.as_object_mut().unwrap().remove("productionExpired");
+            assert!(validate_update_observation(&target, &wrong).is_err());
+        }
+    }
+}
+
+#[test]
 fn first_launch_omitted_limits_keep_legacy_runtime_authorization_and_unbounded_options() {
     use zdn::{chain::producer::ProducerOptions, host::external::runtime::ProductionAdmission};
     let mut runtime = limited_producer();

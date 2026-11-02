@@ -5,8 +5,11 @@
 use super::{Manifest, ProductionAdmission, MAX_BYTES};
 use crate::{
     chain::{
-        bootstrap::BootstrapOptions, producer::ProducerOptions, readiness::ReadinessOptions,
-        rpc::SystemClock, runtime_config::NodeRole,
+        bootstrap::BootstrapOptions,
+        producer::ProducerOptions,
+        readiness::ReadinessOptions,
+        rpc::{Clock, DeadlineRpc, SystemClock},
+        runtime_config::NodeRole,
     },
     host::{
         artifact_delivery::{self, Delivery},
@@ -790,6 +793,17 @@ pub fn dispatch(
                 .produce(&rpc, &clock, &options, cancelled)?,
         )?));
     }
+    // Convert the executor's original work cutoff, not a fresh Ready budget.
+    // Production has its own long-lived service admission above.
+    let rpc = DeadlineRpc {
+        rpc: &rpc,
+        clock: &clock,
+        cancelled,
+        deadline: clock.elapsed()
+            + executor
+                .work_deadline()?
+                .saturating_duration_since(Instant::now()),
+    };
     if operation == Operation::Ready {
         match node.read("bootstrap-complete.json", 8192) {
             Ok(bytes) => ensure!(
@@ -810,6 +824,7 @@ pub fn dispatch(
                         ..Default::default()
                     },
                 )?;
+                rpc.remaining()?;
                 node.publish(
                     "bootstrap-complete.json",
                     &manifest.volume_identity()?,
@@ -879,6 +894,10 @@ pub fn dispatch(
                         serde_json::json!({"observation":manifest.observation("ready")?,"readiness":readiness,"producer":status}),
                     ));
                 }
+                ensure!(
+                    manifest.expired_production(&node)?.is_none(),
+                    "external production lifetime exhausted during startup"
+                );
                 ensure!(
                     !cancelled.load(Ordering::Relaxed)
                         && Instant::now() < executor.work_deadline()?,
@@ -965,6 +984,14 @@ pub fn dispatch(
             "external gateway authenticated service differs"
         );
         return Ok(Some(actual));
+    }
+    let expired = manifest.expired_production(&node)?;
+    if let Some(expired) = expired {
+        producer::require_service_stopped(&config.tool("systemctl")?, &mut executor, cancelled)?;
+        return Ok(Some(serde_json::json!({
+            "observation":manifest.observation("ready")?,"readiness":readiness,
+            "producer":null,"productionExpired":expired
+        })));
     }
     let producer = producer::observe_external(
         manifest,

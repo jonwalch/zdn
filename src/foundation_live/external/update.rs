@@ -517,7 +517,7 @@ pub fn apply<A: AwsApi, R: PulumiRunner, T: Runtime>(
                 });
             preflight(backend, deployment, &nodes)?;
             if !reconcile {
-                backend.observe_external(deployment, true)?;
+                backend.observe_external(deployment, ProducerReadiness::Active)?;
             }
             Ok(json!({"ownershipChecked":true,"freshReadinessChecked":!reconcile}))
         })?;
@@ -620,7 +620,7 @@ pub fn apply<A: AwsApi, R: PulumiRunner, T: Runtime>(
             Ok(json!({"updateId":id,"nodes":intent.nodes.keys().collect::<Vec<_>>()}))
         })?;
         foundation::phase(store, &mut receipt, "readiness", false, progress, || {
-            backend.observe_external(deployment, true)
+            backend.observe_external(deployment, ProducerReadiness::ActiveOrExpired)
         })?;
         let endpoints = endpoint_file(deployment, root)?;
         saved_bytes(

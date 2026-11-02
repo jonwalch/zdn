@@ -618,7 +618,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> FoundationBackend for LiveBackend<'
         deployment.require_native_execution()?;
         #[cfg(target_os = "linux")]
         if deployment.external.is_some() {
-            return self.observe_external(deployment, true);
+            return self.observe_external(deployment, external::ProducerReadiness::Active);
         }
         if deployment.cluster.is_some() {
             return self.observe_cluster(deployment);

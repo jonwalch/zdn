@@ -239,21 +239,74 @@ impl ProductionActivation {
             serde_json::to_vec(&value)? == bytes,
             "noncanonical production activation"
         );
+        value.validate(manifest)?;
+        Ok(value)
+    }
+
+    fn validate(&self, manifest: &Manifest) -> Result<()> {
         ensure!(
-            value.schema == "zdn-external-production-activation/v1"
-                && Some(&value.limits) == manifest.production_limits.as_ref()
-                && value.authorization == Pin::of(&manifest.producer_authorization()?)
-                && value
+            self.schema == "zdn-external-production-activation/v1"
+                && Some(&self.limits) == manifest.production_limits.as_ref()
+                && self.authorization == Pin::of(&manifest.producer_authorization()?)
+                && self
                     .activated_unix_seconds
-                    .checked_add(u64::from(value.limits.lifetime_seconds))
-                    == Some(value.deadline_unix_seconds),
+                    .checked_add(u64::from(self.limits.lifetime_seconds))
+                    == Some(self.deadline_unix_seconds),
             "external production activation differs"
         );
-        Ok(value)
+        Ok(())
+    }
+
+    fn expired(&self) -> Result<bool> {
+        Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() >= self.deadline_unix_seconds)
     }
 }
 
 impl Manifest {
+    /// Read the original authenticated lifetime, never creating or renewing it.
+    /// This is not proof of a stopped service; the host must fence that too.
+    pub fn expired_production(&self, node: &Directory) -> Result<Option<serde_json::Value>> {
+        self.validate()?;
+        if self.block_interval_seconds.is_none() || self.production_limits.is_none() {
+            return Ok(None);
+        }
+        match node.read("producer-authorized.json", 8192) {
+            Ok(bytes) => ensure!(
+                bytes == self.producer_authorization()?,
+                "external producer authorization differs"
+            ),
+            Err(error)
+                if error.downcast_ref::<nix::errno::Errno>()
+                    == Some(&nix::errno::Errno::ENOENT) =>
+            {
+                return Ok(None)
+            }
+            Err(error) => return Err(error),
+        }
+        let activation = ProductionActivation::read(self, node)?;
+        if activation.expired()? {
+            Ok(Some(serde_json::to_value(activation)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Only update completion may accept an authenticated exhausted lifetime.
+    pub fn validate_expired_production(&self, value: &serde_json::Value) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            self.block_interval_seconds.is_some(),
+            "unscheduled producer"
+        );
+        let activation: ProductionActivation = contract::parse(&serde_json::to_vec(value)?)?;
+        activation.validate(self)?;
+        ensure!(
+            activation.expired()?,
+            "external production lifetime is not exhausted"
+        );
+        Ok(())
+    }
+
     /// Called only by authenticated start-producer under the installation lock,
     /// before service startup. A retry reads the original deadline, never renews
     /// it. Produce/qualification cannot create or repair a missing activation.
