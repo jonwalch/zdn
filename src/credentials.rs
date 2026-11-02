@@ -251,6 +251,11 @@ pub fn client(
     }
     let api = AwsCli::with_environment(selection, "aws", environment)?
         .expect_role(team.deployment.as_ref().map(|a| a.role_arn.clone()))?;
+    let api = if team.deployment.is_some() {
+        api.cache_role_credentials()?
+    } else {
+        api
+    };
     api.verify_cli_version()?;
     Ok((api, files))
 }

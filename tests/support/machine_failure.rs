@@ -53,6 +53,8 @@ pub fn install(root: &Path) {
     executable::write(&aws, r#"#!/bin/sh
 case "$*" in
   --version) printf 'aws-cli/2.37.4 Python/3.13 fixture\n' ;;
+  *'configure export-credentials'*)
+    printf '%s\n' '{"Version":1,"AccessKeyId":"fixture-key","SecretAccessKey":"fixture-secret","SessionToken":"fixture-token","Expiration":"2099-01-01T00:00:00Z"}' ;;
   *'sts get-caller-identity'*)
     printf 'waiting' > "$ZDN_FIXTURE_WAITING"
     i=0

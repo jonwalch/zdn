@@ -494,3 +494,137 @@ fn malformed_or_oversized_inputs_fail_without_external_work() {
         assert!(validate_docker_inspect(&record, &verified, invalid).is_err());
     }
 }
+
+#[test]
+fn public_build_requirements_reject_unknown_unbounded_or_noncanonical_tokens() {
+    use zdn::image::{validate_cargo_features, ImageBuildRequirements};
+    for features in [
+        vec!["".into()],
+        vec!["b".into(), "a".into()],
+        vec!["a".into(), "a".into()],
+        vec!["--flag".into()],
+        vec!["a/b".into()],
+        vec!["a?".into()],
+        vec!["a,b".into()],
+        vec!["a b".into()],
+        vec!["a\nb".into()],
+        vec!["A=B".into()],
+        vec!["a;id".into()],
+        vec!["a$(id)".into()],
+        vec!["é".into()],
+        vec!["a".repeat(65)],
+        (0..33).map(|i| format!("f{i:02}")).collect(),
+        (0..5).map(|i| format!("f{i}{}", "a".repeat(60))).collect(),
+    ] {
+        assert!(validate_cargo_features(&features).is_err(), "{features:?}");
+        assert!(ImageBuildRequirements::new(&features, &[]).is_err());
+    }
+    for capabilities in [
+        vec!["unknown".into()],
+        vec![
+            "slh-dsa-b128s-v2".into(),
+            "native-managed-identity-v1".into(),
+        ],
+        vec!["slh-dsa-b128s-v2".into(), "slh-dsa-b128s-v2".into()],
+    ] {
+        assert!(ImageBuildRequirements::new(&[], &capabilities).is_err());
+    }
+    validate_cargo_features(&[]).unwrap();
+    validate_cargo_features(&["A_1".into(), "feature-b".into()]).unwrap();
+    validate_cargo_features(&(0..32).map(|i| format!("f{i:02}")).collect::<Vec<_>>()).unwrap();
+    let mut boundary = vec![
+        "a".repeat(64),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(63),
+    ];
+    assert_eq!(boundary.join(",").len(), 256);
+    validate_cargo_features(&boundary).unwrap();
+    boundary[1].push('b');
+    assert!(validate_cargo_features(&boundary).is_err());
+    let mut requirements = ImageBuildRequirements::new(&[], &[]).unwrap();
+    requirements.schema = "unknown".into();
+    assert!(requirements.validate().is_err());
+}
+
+#[test]
+fn external_images_require_explicit_typed_admission_and_exact_features_on_both_observations() {
+    use zdn::image::{
+        validate_config_bytes_for_requirements, validate_docker_inspect_for_requirements,
+        validate_manifest_bytes_for_requirements, ImageBuildRequirements, FEATURE_API_VERSION,
+    };
+    for features in [Vec::new(), vec!["feature-a".into(), "feature-b".into()]] {
+        let requirements =
+            ImageBuildRequirements::new(&features, &["slh-dsa-b128s-v2".into()]).unwrap();
+        for observed in [
+            None,
+            Some(""),
+            Some("feature-a"),
+            Some("feature-a,feature-b"),
+            Some("feature-b,feature-a"),
+            Some("feature-a,feature-a"),
+            Some("feature-a,feature-b,extra"),
+        ] {
+            let mut input = registry_config();
+            input["config"]["Env"] = match observed {
+                None => json!([]),
+                Some(features) => json!([format!("FEATURES={features}")]),
+            };
+            let (mut record, manifest, config, inspect) = fixture_with_config(&input);
+            record.api_version = FEATURE_API_VERSION.into();
+            record.capabilities =
+                ImageCapabilities::for_requirements(requirements.clone()).unwrap();
+            requirements.validate_image(&record).unwrap();
+            // No global relaxation: existing ordinary/package paths fail closed.
+            assert!(record.validate().is_err());
+            assert!(ImageRecord::from_json(&serde_json::to_vec(&record).unwrap()).is_err());
+            assert_eq!(
+                ImageRecord::from_json_for_requirements(
+                    &serde_json::to_vec(&record).unwrap(),
+                    &requirements
+                )
+                .unwrap(),
+                record
+            );
+            assert!(validate_manifest_bytes(&record, &manifest).is_err());
+            let verified =
+                validate_manifest_bytes_for_requirements(&record, &requirements, &manifest)
+                    .unwrap();
+            let config_result =
+                validate_config_bytes_for_requirements(&record, &requirements, &verified, &config);
+            let inspect_result = validate_docker_inspect_for_requirements(
+                &record,
+                &requirements,
+                &verified,
+                &serde_json::to_vec(&inspect).unwrap(),
+            );
+            if observed == Some(features.join(",").as_str()) {
+                config_result.unwrap();
+                let report = inspect_result.unwrap();
+                assert!(!report.capabilities_observed && !report.launch_ready);
+                let mut changed = requirements.clone();
+                changed.required_capabilities.clear();
+                assert!(changed.validate_image(&record).is_err());
+                let mut changed_record = record.clone();
+                changed_record.capabilities.cookie_auth = false;
+                assert!(requirements.validate_image(&changed_record).is_err());
+                let mut changed_inspect = inspect.clone();
+                changed_inspect[0]["Config"]["Env"] = json!(["FEATURES=other"]);
+                assert!(validate_docker_inspect_for_requirements(
+                    &record,
+                    &requirements,
+                    &verified,
+                    &serde_json::to_vec(&changed_inspect).unwrap()
+                )
+                .is_err());
+            } else {
+                assert!(config_result.is_err(), "{features:?}, {observed:?}");
+                assert!(inspect_result.is_err(), "{features:?}, {observed:?}");
+            }
+        }
+    }
+    let (record, manifest, _, _) = fixture();
+    let requirements = ImageBuildRequirements::new(&[], &[]).unwrap();
+    assert!(requirements.validate_image(&record).is_err());
+    assert!(validate_manifest_bytes_for_requirements(&record, &requirements, &manifest).is_err());
+}

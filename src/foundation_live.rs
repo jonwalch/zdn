@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 mod cluster;
 mod destroy;
+#[cfg(target_os = "linux")]
+pub mod external;
 pub(crate) mod health;
 mod new_volume;
 
@@ -407,9 +409,27 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> FoundationBackend for LiveBackend<'
         aws::verify_identity(&self.aws, &self.selection)?;
         if destroying {
             aws::verify_backend_for_cleanup(&self.aws, &self.selection, &deployment.team)?;
+            if deployment.external_source.is_some() {
+                crate::build_job::reconcile_for_removal(
+                    &self.aws,
+                    &self
+                        .deployment_directory
+                        .join(crate::foundation::external::source::ROOT)
+                        .join("build"),
+                    &deployment.team,
+                )?;
+            }
+            #[cfg(target_os = "linux")]
+            if deployment.external.is_some() {
+                external::verify_cleanup_builds(&self.aws, deployment, &self.deployment_directory)?;
+            }
         } else {
             aws::verify_backend(&self.aws, &self.selection, &deployment.team)?;
             validate_host_request(&self.aws, &deployment.spec)?;
+            #[cfg(target_os = "linux")]
+            if deployment.external.is_some() {
+                return self.verify_external(deployment);
+            }
             if deployment.cluster.is_some() {
                 self.verify_cluster(deployment)?;
             } else if let Some(runtime) = &deployment.foundation_runtime {
@@ -467,7 +487,13 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> FoundationBackend for LiveBackend<'
     )]
     fn prepare(&mut self, deployment: &Deployment, reconcile: bool) -> Result<()> {
         if !self.destroying {
-            self.stage_cluster_artifacts(deployment)?;
+            #[cfg(target_os = "linux")]
+            if deployment.external.is_some() {
+                self.stage_external_artifacts(deployment)?;
+            }
+            if deployment.external.is_none() {
+                self.stage_cluster_artifacts(deployment)?;
+            }
         }
         let mut progress = || {
             pulse(
@@ -497,7 +523,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> FoundationBackend for LiveBackend<'
             let checkpoint = self.client.foundation_export(&mut progress)?;
             destroy::save_volume_identities(&self.deployment_directory, deployment, &checkpoint)?;
         }
-        if !self.destroying && deployment.cluster.is_some() {
+        if !self.destroying && deployment.has_nodes() {
             let checkpoint = self.client.foundation_export(&mut progress)?;
             self.record_volume_creation(deployment, &checkpoint)?;
         }
@@ -555,6 +581,10 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> FoundationBackend for LiveBackend<'
     )]
     fn deploy_runtime(&mut self, deployment: &Deployment) -> Result<Value> {
         deployment.require_native_execution()?;
+        #[cfg(target_os = "linux")]
+        if deployment.external.is_some() {
+            return self.install_external(deployment);
+        }
         if deployment
             .runtime
             .as_ref()
@@ -566,12 +596,30 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> FoundationBackend for LiveBackend<'
             self.install_cluster(deployment)
         }
     }
+    #[cfg(target_os = "linux")]
+    fn verify_external_control(&mut self, deployment: &Deployment, node: &str) -> Result<()> {
+        self.verify_control(deployment, node)
+    }
+    #[cfg(target_os = "linux")]
+    fn external_control(
+        &mut self,
+        deployment: &Deployment,
+        original: &crate::host::external::runtime::Manifest,
+        request: &crate::host::external::runtime::qualification::Request,
+        journal: &Path,
+    ) -> Result<Value> {
+        self.control_external(deployment, original, request, journal)
+    }
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "foundation_live.live_backend.ready")
     )]
     fn ready(&mut self, deployment: &Deployment) -> Result<Value> {
         deployment.require_native_execution()?;
+        #[cfg(target_os = "linux")]
+        if deployment.external.is_some() {
+            return self.observe_external(deployment, external::ProducerReadiness::Active);
+        }
         if deployment.cluster.is_some() {
             return self.observe_cluster(deployment);
         }
@@ -951,13 +999,13 @@ fn owned_chain_volume(volume: &Value, deployment: &Deployment) -> Result<bool> {
         return Ok(false);
     }
     let tags = array(volume, "Tags")?;
-    if let Some(cluster) = &deployment.cluster {
+    if deployment.has_nodes() {
         // A cluster can have several identically scoped disks. Tags alone must
         // never turn an unrecorded disk into a delete-data candidate.
         let Some(outputs) = &deployment.outputs else {
             return Ok(false);
         };
-        let topology = cluster.topology()?;
+        let topology = deployment.node_topology()?;
         crate::cluster_infra::validate_node_outputs(&outputs.nodes, &topology)?;
         if outputs
             .lightwallet
@@ -1223,8 +1271,8 @@ fn inventory_with_volume_identities(
         {"Name":"tag:zdn:managed-by","Values":["zdn"]}]);
     let outputs = deployment.outputs.as_ref();
     validate_cache_outputs(deployment)?;
-    if let (Some(cluster), Some(outputs)) = (&deployment.cluster, outputs) {
-        crate::cluster_infra::validate_node_outputs(&outputs.nodes, &cluster.topology()?)?;
+    if let Some(outputs) = outputs.filter(|_| deployment.has_nodes()) {
+        crate::cluster_infra::validate_node_outputs(&outputs.nodes, &deployment.node_topology()?)?;
         let first = &outputs.nodes[crate::cluster_infra::PRODUCER_NODE_ID];
         ensure!(
             first.instance_id == outputs.instance_id
@@ -1263,7 +1311,7 @@ fn inventory_with_volume_identities(
         })
         .into_iter()
         .collect();
-    if let Some(outputs) = outputs.filter(|_| deployment.cluster.is_some()) {
+    if let Some(outputs) = outputs.filter(|_| deployment.has_nodes()) {
         for node in outputs.nodes.values() {
             if node.instance_id == outputs.instance_id {
                 continue;
@@ -1394,7 +1442,7 @@ fn inventory_with_volume_identities(
         })
         .into_iter()
         .collect();
-    if let Some(outputs) = outputs.filter(|_| deployment.cluster.is_some()) {
+    if let Some(outputs) = outputs.filter(|_| deployment.has_nodes()) {
         for node in outputs.nodes.values() {
             if node.volume_id == outputs.chain_volume_id {
                 continue;

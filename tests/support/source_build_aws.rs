@@ -69,6 +69,10 @@ fn response(root: &Path, f: &Value, args: &[String]) -> Result<Value> {
         bail!("aws: [ERROR]: Your session has expired. fixture-secret-do-not-disclose");
     }
     match (service.as_str(), operation.as_str()) {
+        ("configure", "export-credentials") => Ok(json!({
+            "Version":1,"AccessKeyId":"fixture-key","SecretAccessKey":"fixture-secret",
+            "SessionToken":"fixture-token","Expiration":"2099-01-01T00:00:00Z"
+        })),
         ("sts", "get-caller-identity") => Ok(
             json!({"Account":"123456789012","Arn":format!("arn:aws:sts::123456789012:assumed-role/{}/fixture",f["roleName"].as_str().unwrap()),"UserId":"fixture"}),
         ),

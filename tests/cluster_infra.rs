@@ -5,7 +5,7 @@ use uuid::Uuid;
 use zdn::{
     access::{DeploymentAccess, TEAM_ROLE_API_VERSION},
     aws::{TeamAws, TeamDefinition, TeamState},
-    cluster_infra::{parse_node_outputs, ClusterTopology, P2P_PORT},
+    cluster_infra::{parse_node_outputs, ClusterTopology, NativeListener, P2P_PORT},
     config::Size,
     foundation::Deployment,
     infra::{Definition, FoundationSpec, PulumiProgram},
@@ -188,6 +188,74 @@ fn firewall_allows_only_membership_p2p_and_outbound_https() {
             false
         );
     }
+}
+
+#[test]
+fn native_udp_is_explicit_exact_and_preserves_every_other_resource() {
+    for count in 1..=3 {
+        let deployment = deployment();
+        let topology = ClusterTopology::new(count).unwrap();
+        let ordinary = serde_json::to_value(render(&deployment, count)).unwrap();
+        for port in [18233, 28333] {
+            let listener =
+                NativeListener::new(format!("0.0.0.0:{port}").parse().unwrap(), &topology).unwrap();
+            let mut native = serde_json::to_value(
+                topology
+                    .render_native(
+                        deployment.render().unwrap(),
+                        &deployment.spec,
+                        &scripts(&topology),
+                        listener,
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+            let group = &native["resources"]["hostSecurityGroup"]["properties"];
+            let ingress = &group["ingress"];
+            assert_eq!(ingress.as_array().unwrap().len(), 1);
+            assert_eq!(ingress[0]["protocol"], "udp");
+            assert_eq!(ingress[0]["fromPort"], port);
+            assert_eq!(ingress[0]["toPort"], port);
+            assert_eq!(
+                ingress[0]["cidrBlocks"],
+                ordinary["resources"]["hostSecurityGroup"]["properties"]["ingress"][0]
+                    ["cidrBlocks"]
+            );
+            assert_eq!(group["egress"].as_array().unwrap().len(), 2);
+            assert_eq!(group["egress"][1], ingress[0]);
+            assert_eq!(
+                group["egress"][0],
+                ordinary["resources"]["hostSecurityGroup"]["properties"]["egress"][0]
+            );
+            native["resources"]["hostSecurityGroup"]["properties"]["ingress"] =
+                ordinary["resources"]["hostSecurityGroup"]["properties"]["ingress"].clone();
+            native["resources"]["hostSecurityGroup"]["properties"]["egress"][1] =
+                ordinary["resources"]["hostSecurityGroup"]["properties"]["egress"][1].clone();
+            assert_eq!(native, ordinary);
+        }
+        for invalid in [
+            "0.0.0.0:0",
+            "127.0.0.1:18233",
+            "8.8.8.8:18233",
+            "10.90.1.99:18233",
+            "10.91.1.10:18233",
+            "[::]:18233",
+        ] {
+            assert!(NativeListener::new(invalid.parse().unwrap(), &topology).is_err());
+        }
+    }
+    let three = ClusterTopology::new(3).unwrap();
+    let listener = NativeListener::new("10.90.1.12:28333".parse().unwrap(), &three).unwrap();
+    let one = ClusterTopology::new(1).unwrap();
+    let deployment = deployment();
+    assert!(one
+        .render_native(
+            deployment.render().unwrap(),
+            &deployment.spec,
+            &scripts(&one),
+            listener
+        )
+        .is_err());
 }
 
 #[test]

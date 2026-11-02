@@ -23,8 +23,28 @@ pub fn export(store: &StateStore, binding: &Binding, output: &Path) -> Result<St
     DeploymentFile::read_snapshot(store.root(), binding.network_id)?;
     let deployment_file = DeploymentFile::open(store.root(), binding.network_id)?;
     let deployment = deployment_file.load()?;
+    // The create-only public source directory can precede the deployment save.
+    // Recover only its scope-bound explicit contract, without invoking tools or
+    // modifying the source controller's receipt.
+    let deployment = {
+        let mut saved = deployment;
+        if saved.cluster.is_none() && saved.external.is_none() && saved.external_source.is_none() {
+            if let Some(source) = crate::foundation::external::source::SourcePreparation::read(
+                deployment_file.directory(),
+            )? {
+                source.validate(&saved)?;
+                saved.external_source = Some(source);
+            }
+        }
+        saved
+    };
     let mut manifest = Manifest {
-        api_version: API_VERSION.into(),
+        api_version: if deployment.external.is_some() || deployment.external_source.is_some() {
+            super::EXTERNAL_API_VERSION
+        } else {
+            API_VERSION
+        }
+        .into(),
         binding: binding.to_export(),
         deployment,
         operations: store.handoff_operations(binding)?,
@@ -37,7 +57,19 @@ pub fn export(store: &StateStore, binding: &Binding, output: &Path) -> Result<St
         "handoff deployment identity differs from its binding"
     );
     // Keep an existing build attempt locked until the handoff is published.
-    let _build_lock = if let Some(request) = &manifest.deployment.cluster {
+    #[cfg(target_os = "linux")]
+    let _external_build_locks = if manifest.deployment.external.is_some()
+        || manifest.deployment.external_source.is_some()
+    {
+        super::external::locks(&manifest, deployment_file.directory())?
+    } else {
+        Vec::new()
+    };
+    let _build_lock = if manifest.deployment.external.is_some()
+        || manifest.deployment.external_source.is_some()
+    {
+        None
+    } else if let Some(request) = &manifest.deployment.cluster {
         crate::build_job::validate_handoff(
             &deployment_file.directory().join("build"),
             &manifest.deployment.team,
@@ -55,7 +87,10 @@ pub fn export(store: &StateStore, binding: &Binding, output: &Path) -> Result<St
     };
     let updates_directory = deployment_file.directory().join("updates");
     let mut update_build_locks = Vec::new();
-    if updates_directory.try_exists()? {
+    if manifest.deployment.external.is_none()
+        && manifest.deployment.external_source.is_none()
+        && updates_directory.try_exists()?
+    {
         ensure!(
             fs::symlink_metadata(&updates_directory)?.is_dir(),
             "updates must be a real directory"
@@ -267,6 +302,12 @@ fn inventory(
     prefix: &str,
     total: &mut u64,
 ) -> Result<()> {
+    if manifest.deployment.external.is_some() || manifest.deployment.external_source.is_some() {
+        #[cfg(target_os = "linux")]
+        return super::external::inventory(manifest, source, staging, prefix, total);
+        #[cfg(not(target_os = "linux"))]
+        eyre::bail!("external handoff validation is unavailable on this platform");
+    }
     for entry in fs::read_dir(source.join(prefix))? {
         let entry = entry?;
         let name = entry

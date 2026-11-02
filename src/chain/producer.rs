@@ -94,6 +94,11 @@ pub struct ProducerOptions {
     /// Optional bound for qualification; counts confirmations during this run,
     /// including a recovered intent. The host service leaves this unset.
     pub max_blocks: Option<u64>,
+    /// Absolute best-chain ceiling, retained across separate bounded invocations.
+    /// Pending work is still reconciled; this never authorizes another request.
+    pub max_height: Option<u32>,
+    /// Monotonic budget for new generation, relative to this invocation.
+    pub max_duration: Option<Duration>,
     /// Skip scheduled waits for a bounded qualification run. All per-block
     /// validation and durable reconciliation still apply.
     pub unpaced: bool,
@@ -110,6 +115,8 @@ impl ProducerOptions {
             reconciliation_deadline: Duration::from_secs(30),
             poll_interval: Duration::from_secs(1),
             max_blocks: None,
+            max_height: None,
+            max_duration: None,
             unpaced: false,
         }
     }
@@ -119,9 +126,13 @@ impl ProducerOptions {
         tracing::instrument(skip_all, name = "chain.producer.options.validate")
     )]
     fn validate(&self, manifest: &ConsensusManifest) -> Result<()> {
+        self.validate_fingerprint(&manifest.fingerprint()?)
+    }
+
+    fn validate_fingerprint(&self, fingerprint: &str) -> Result<()> {
         self.identity.validate()?;
         ensure!(
-            self.identity.consensus_fingerprint == manifest.fingerprint()?,
+            self.identity.consensus_fingerprint == fingerprint,
             "producer identity does not match the consensus manifest"
         );
         ensure!(
@@ -154,6 +165,11 @@ impl ProducerOptions {
         ensure!(
             self.max_blocks != Some(0),
             "producer max blocks must be positive"
+        );
+        ensure!(
+            self.max_duration
+                .is_none_or(|d| !d.is_zero() && d <= Duration::from_secs(7200)),
+            "producer duration must be positive and at most two hours"
         );
         ensure!(
             !self.unpaced || self.max_blocks.is_some(),
@@ -245,9 +261,55 @@ pub fn run_producer(
     cancel: &AtomicBool,
 ) -> Result<ProducerReport> {
     options.validate(manifest)?;
+    run_prepared(
+        PreparedReadiness::new(manifest)?,
+        rpc,
+        clock,
+        options,
+        cancel,
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "chain.producer.run_external")
+)]
+pub(crate) fn run_external(
+    compiled: &crate::public_chain_adapter::contract::Compiled,
+    rpc: &impl NodeRpc,
+    clock: &impl Clock,
+    options: &ProducerOptions,
+    cancel: &AtomicBool,
+) -> Result<ProducerReport> {
+    options.validate_fingerprint(&compiled.native_fingerprint)?;
+    run_prepared(
+        PreparedReadiness::external(compiled),
+        rpc,
+        clock,
+        options,
+        cancel,
+    )
+}
+
+fn run_prepared(
+    prepared: PreparedReadiness,
+    rpc: &impl NodeRpc,
+    clock: &impl Clock,
+    options: &ProducerOptions,
+    cancel: &AtomicBool,
+) -> Result<ProducerReport> {
     let (store, mut journal) = Store::open(options)?;
     let rpc = CancellableRpc { rpc, cancel };
-    let result = run_inner(manifest, &rpc, clock, options, cancel, &store, &mut journal);
+    let result = run_inner(
+        &prepared,
+        &rpc,
+        clock,
+        options,
+        cancel,
+        &store,
+        &mut journal,
+    );
     match result {
         Ok(()) => {
             journal.phase = ProducerPhase::Stopped;
@@ -291,7 +353,7 @@ pub fn run_producer(
     tracing::instrument(skip_all, name = "chain.producer.run_inner")
 )]
 fn run_inner(
-    manifest: &ConsensusManifest,
+    prepared: &PreparedReadiness,
     rpc: &impl NodeRpc,
     clock: &impl Clock,
     options: &ProducerOptions,
@@ -303,9 +365,7 @@ fn run_inner(
         return Ok(());
     }
     let start = clock.elapsed();
-    let prepared = PreparedReadiness::new(manifest)
-        .context("verify producer rules, saved history and mining readiness")?;
-    let initial = ready(&prepared, rpc, clock, options, start)?;
+    let initial = ready(prepared, rpc, clock, options, start)?;
     if cancelled(cancel) {
         return Ok(());
     }
@@ -332,13 +392,26 @@ fn run_inner(
     loop {
         if cancelled(cancel)
             || options
+                .max_duration
+                .is_some_and(|d| clock.elapsed().saturating_sub(start) >= d)
+            || options.max_height.is_some_and(|height| {
+                journal
+                    .last_confirmed_tip
+                    .as_ref()
+                    .is_some_and(|tip| tip.height >= height)
+            })
+            || options
                 .max_blocks
                 .is_some_and(|maximum| journal.confirmed_blocks - started_count >= maximum)
         {
             return Ok(());
         }
         while !options.unpaced && clock.elapsed() < next {
-            if cancelled(cancel) {
+            if cancelled(cancel)
+                || options
+                    .max_duration
+                    .is_some_and(|d| clock.elapsed().saturating_sub(start) >= d)
+            {
                 return Ok(());
             }
             clock.sleep(
@@ -351,12 +424,19 @@ fn run_inner(
         }
         // Recheck parsed rules, saved history, actual tip and a matching fresh
         // template before every request, including after a long pause.
-        let parent = ready(&prepared, rpc, clock, options, clock.elapsed())?;
+        let parent = ready(prepared, rpc, clock, options, clock.elapsed())?;
         ensure!(
             journal.last_confirmed_tip.as_ref() == Some(&parent),
             "producer tip moved without a pending generation; refusing generation"
         );
-        if cancelled(cancel) {
+        if cancelled(cancel)
+            || options
+                .max_duration
+                .is_some_and(|d| clock.elapsed().saturating_sub(start) >= d)
+            || options
+                .max_height
+                .is_some_and(|height| parent.height >= height)
+        {
             return Ok(());
         }
         let sequence = journal
@@ -578,7 +658,7 @@ fn reconciliation_remaining(
         .context("generation outcome remains unresolved; refusing another generation request")
 }
 
-fn read_tip(rpc: &impl NodeRpc, timeout: Duration) -> Result<ProducerTip> {
+pub(crate) fn read_tip(rpc: &impl NodeRpc, timeout: Duration) -> Result<ProducerTip> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct RawTip {

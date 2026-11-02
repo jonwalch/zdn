@@ -276,6 +276,14 @@ struct VolumeIdentities {
 }
 
 fn request_sha256(deployment: &Deployment) -> Result<String> {
+    if let Some(external) = &deployment.external {
+        return Ok(crate::devnet::sha256(&serde_json::to_vec(&(
+            &deployment.spec,
+            &deployment.team,
+            external,
+            deployment.owner_id,
+        ))?));
+    }
     Ok(crate::devnet::sha256(&serde_json::to_vec(&(
         &deployment.spec,
         &deployment.team,

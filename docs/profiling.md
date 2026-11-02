@@ -25,6 +25,15 @@ artifacts/builds, state, chain/RPC, wallet history/journals, and lightwallet che
 Native helper spans cover capacity, storage, verified delivery, installation,
 updates, service control, gateway requests, and lightwallet supervision.
 
+External-chain spans follow the same convention. They cover public adapter
+snapshot/compile/render/validation, source preparation, native peer inventory,
+controller installation/readiness/updates, host identity/runtime admission and
+handoff verification. Span names are fixed; manifests, paths, identities,
+artifact bytes and companion diagnostics are not recorded. Host authentication
+and dispatch preflight spans close before process replacement or long-lived
+gateway/producer supervision. Larger contract-selected RPC body classes use the
+same HTTP-client and gateway spans as ordinary requests.
+
 Wallet catalog spans distinguish authority validation, SQLite connection setup,
 live-record reads, paginated inventory and migration. Settlement spans cover the
 explicit format upgrade, canonical-chain reconciliation and archival. These

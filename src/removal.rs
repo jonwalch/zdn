@@ -26,6 +26,74 @@ use std::{
 mod team;
 pub use team::{remove_team, team_plan, TeamRemovalOptions};
 
+/// Additional native build receipts owned by the separate external branch.
+/// The caller's ordinary build/update discovery remains unchanged. This reads
+/// ownership and known jobs only; it never executes the companion or submits,
+/// stops, or resumes a build to manufacture cleanup admission.
+pub fn external_build_evidence(
+    api: &dyn AwsApi,
+    deployment: &foundation::Deployment,
+    directory: &Path,
+    reconcile: bool,
+) -> Result<Vec<Value>> {
+    let mut paths = Vec::new();
+    let source = directory.join(foundation::external::source::ROOT);
+    if deployment.external_source.is_some() || source.try_exists()? {
+        let preparation = foundation::external::source::SourcePreparation::read(directory)?
+            .context("external source ownership record missing")?;
+        preparation.validate(deployment)?;
+        if let Some(saved) = &deployment.external_source {
+            ensure!(
+                serde_json::to_value(saved)? == serde_json::to_value(&preparation)?,
+                "external source cleanup ownership differs"
+            );
+        }
+        ensure!(
+            fs::symlink_metadata(&source)?.is_dir(),
+            "invalid external source directory"
+        );
+        paths.push(source.join("build"));
+    }
+    let updates = directory.join("external-updates");
+    if updates.try_exists()? {
+        ensure!(
+            deployment.external.is_some() && fs::symlink_metadata(&updates)?.is_dir(),
+            "invalid external update ownership directory"
+        );
+        for entry in fs::read_dir(&updates)? {
+            let entry = entry?;
+            ensure!(
+                entry.file_type()?.is_dir(),
+                "invalid external update proof directory"
+            );
+            let id = uuid::Uuid::parse_str(
+                entry
+                    .file_name()
+                    .to_str()
+                    .context("invalid external update UUID")?,
+            )?;
+            ensure!(
+                id.get_version_num() == 4 && id.get_variant() == uuid::Variant::RFC4122,
+                "invalid external update UUID"
+            );
+            let build = entry.path().join("build");
+            if build.try_exists()? {
+                paths.push(build);
+            }
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            if reconcile {
+                crate::build_job::reconcile_for_removal(api, &path, &deployment.team)?;
+            }
+            crate::build_job::removal_evidence(&path, &deployment.team)
+        })
+        .collect()
+}
+
 /// Fakeable, existing-stack-only boundary. Never refresh before checking saved
 /// identities: refresh can silently adopt a replacement with the same name.
 pub trait RemovalStack {

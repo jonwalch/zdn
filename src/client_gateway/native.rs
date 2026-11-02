@@ -54,7 +54,13 @@ pub fn validate_observation(
 pub fn unit(manifest: &Manifest) -> Result<String> {
     upstream(manifest)?;
     let command = format!("/etc/zdn/runtime/{}/zdn __client-gateway --protocol {PROTOCOL} --manifest /etc/zdn/runtime/manifests/{} serve", manifest.runtime.helper.sha256, manifest.file_name()?);
-    Ok(format!(
+    Ok(unit_for_command(&command))
+}
+
+/// Fixed gateway policy shared by explicitly versioned host branches. The
+/// caller constructs the command from validated content-addressed paths only.
+pub(crate) fn unit_for_command(command: &str) -> String {
+    format!(
         r#"[Unit]
 Description=zdn private participant RPC
 After=zdn-node.service
@@ -84,5 +90,5 @@ CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 [Install]
 WantedBy=zdn-node.service
 "#
-    ))
+    )
 }

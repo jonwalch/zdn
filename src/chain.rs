@@ -37,6 +37,7 @@ impl ChainRequest {
     )]
     pub fn from_config(config: &Config) -> Result<Self> {
         config.validate()?;
+        config.require_ordinary_chain()?;
         Ok(Self {
             api_version: "zdn-chain-request/v1alpha1".into(),
             kind: config.network.kind.clone(),

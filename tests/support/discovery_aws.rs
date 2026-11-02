@@ -19,6 +19,16 @@ fn read_json(path: &Path) -> Result<Value> {
 }
 
 fn response(root: &Path, args: &[String], mode: &str, parent: i32) -> Result<Value> {
+    // Credential export is local CLI resolution, not a recorded AWS API call.
+    if args
+        .windows(2)
+        .any(|s| s == ["configure", "export-credentials"])
+    {
+        return Ok(json!({
+            "Version":1,"AccessKeyId":"fixture-key","SecretAccessKey":"fixture-secret",
+            "SessionToken":"fixture-token","Expiration":"2099-01-01T00:00:00Z"
+        }));
+    }
     let index = args
         .iter()
         .position(|s| ["sts", "ssm", "s3api", "ec2", "iam"].contains(&s.as_str()))

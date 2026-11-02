@@ -14,7 +14,8 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tempfile::NamedTempFile;
 use uuid::Uuid;
@@ -268,6 +269,12 @@ pub struct AwsCall<'a> {
     pub extra_args: Vec<String>,
 }
 
+/// An independent request in a batch spanning AWS services.
+pub struct AwsServiceCall<'a> {
+    pub service: &'a str,
+    pub call: AwsCall<'a>,
+}
+
 /// The boundary used by bootstrap and object storage. Implementations must preserve
 /// argument boundaries and must not include credentials or raw stderr in errors.
 pub trait AwsApi {
@@ -296,6 +303,32 @@ pub trait AwsApi {
                 }
                 let result = self.call(
                     service,
+                    call.operation,
+                    call.input.clone(),
+                    &call.extra_args,
+                );
+                failed = result.is_err();
+                result
+            })
+            .collect())
+    }
+
+    /// Cross-service calls with the same ordering, fail-stop and join contract as
+    /// `batch_call`. One shared worker bound applies across all services. The
+    /// serial default also supports adapters that are not thread safe.
+    fn batch_call_cross_service(&self, calls: &[AwsServiceCall<'_>]) -> Result<Vec<Result<Value>>> {
+        let mut failed = false;
+        Ok(calls
+            .iter()
+            .map(|request| {
+                if failed {
+                    return Err(eyre::eyre!(
+                        "AWS batch request not dispatched after peer failure"
+                    ));
+                }
+                let call = &request.call;
+                let result = self.call(
+                    request.service,
                     call.operation,
                     call.input.clone(),
                     &call.extra_args,
@@ -344,6 +377,32 @@ pub struct AwsCli {
     environment: BTreeMap<String, String>,
     expected_role: Option<String>,
     in_credential_process: bool,
+    role_credentials: Option<Arc<Mutex<Option<RoleCredentials>>>>,
+}
+
+struct RoleCredentials {
+    value: Value,
+    acquired: Instant,
+}
+
+impl std::fmt::Debug for RoleCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoleCredentials").finish_non_exhaustive()
+    }
+}
+
+impl RoleCredentials {
+    fn valid(&self) -> bool {
+        let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+            return false;
+        };
+        // Bound reuse by both wall-clock expiration and monotonic session age.
+        // Clock rollback must not extend the requested one-hour STS session.
+        self.acquired.elapsed() < Duration::from_secs(3540)
+            && self.value["Expiration"].as_str().is_some_and(|expiration| {
+                crate::credentials::validate_expiration(expiration, now.as_secs()).is_ok()
+            })
+    }
 }
 
 impl AwsCli {
@@ -381,6 +440,7 @@ impl AwsCli {
             environment,
             expected_role: None,
             in_credential_process: false,
+            role_credentials: None,
         })
     }
 
@@ -394,6 +454,18 @@ impl AwsCli {
             crate::access::iam_resource(role, &self.selection.account_id, "role")?;
         }
         self.expected_role = role;
+        self.role_credentials = None;
+        Ok(self)
+    }
+
+    /// Reuse a verified temporary role session only in this client's memory.
+    /// Clones share refresh; SDK credential-process files remain non-secret.
+    pub fn cache_role_credentials(mut self) -> Result<Self> {
+        ensure!(
+            self.expected_role.is_some() && !self.in_credential_process,
+            "credential reuse requires an explicit deployment role"
+        );
+        self.role_credentials = Some(Arc::new(Mutex::new(None)));
         Ok(self)
     }
 
@@ -443,8 +515,7 @@ pub fn validate_cli_version(text: &str) -> Result<()> {
 impl AwsCli {
     fn batch_calls(
         &self,
-        service: &str,
-        calls: &[AwsCall<'_>],
+        calls: &[(&str, &AwsCall<'_>)],
         fail_stop: bool,
     ) -> Result<Vec<Result<Value>>> {
         use std::sync::{
@@ -463,7 +534,9 @@ impl AwsCli {
                     let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
                         while !stopped.load(Ordering::SeqCst) {
                             let index = next.fetch_add(1, Ordering::SeqCst);
-                            let Some(call) = calls.get(index) else { break };
+                            let Some((service, call)) = calls.get(index) else {
+                                break;
+                            };
                             let result = self.call(
                                 service,
                                 call.operation,
@@ -516,11 +589,21 @@ impl AwsCli {
 
 impl AwsApi for AwsCli {
     fn batch_call(&self, service: &str, calls: &[AwsCall<'_>]) -> Result<Vec<Result<Value>>> {
-        self.batch_calls(service, calls, true)
+        let calls: Vec<_> = calls.iter().map(|call| (service, call)).collect();
+        self.batch_calls(&calls, true)
     }
 
     fn batch_call_all(&self, service: &str, calls: &[AwsCall<'_>]) -> Result<Vec<Result<Value>>> {
-        self.batch_calls(service, calls, false)
+        let calls: Vec<_> = calls.iter().map(|call| (service, call)).collect();
+        self.batch_calls(&calls, false)
+    }
+
+    fn batch_call_cross_service(&self, calls: &[AwsServiceCall<'_>]) -> Result<Vec<Result<Value>>> {
+        let calls: Vec<_> = calls
+            .iter()
+            .map(|request| (request.service, &request.call))
+            .collect();
+        self.batch_calls(&calls, true)
     }
 
     #[cfg_attr(
@@ -556,6 +639,134 @@ impl AwsApi for AwsCli {
         timeout: Duration,
     ) -> Result<Value> {
         ensure!(!timeout.is_zero(), "AWS call budget exhausted");
+        let started = Instant::now();
+        let (credentials, authenticated_identity) = self.session(timeout)?;
+        if service == "sts"
+            && operation == "get-caller-identity"
+            && input == json!({})
+            && extra_args.is_empty()
+        {
+            if let Some(identity) = authenticated_identity {
+                ensure!(
+                    started.elapsed() < timeout,
+                    AwsApiError {
+                        code: "CommandInterrupted".into()
+                    }
+                );
+                return Ok(identity);
+            }
+        }
+        self.invoke(
+            service,
+            operation,
+            input,
+            extra_args,
+            timeout.saturating_sub(started.elapsed()),
+            credentials.as_ref(),
+        )
+    }
+}
+
+impl AwsCli {
+    // Only a newly authenticated session returns its identity observation. Cache
+    // hits never do: later identity requests must observe STS again.
+    fn session(&self, timeout: Duration) -> Result<(Option<Value>, Option<Value>)> {
+        let Some(cache) = &self.role_credentials else {
+            return Ok((None, None));
+        };
+        let started = Instant::now();
+        let mut cache = loop {
+            match cache.try_lock() {
+                Ok(cache) => break cache,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    bail!("role credential refresh unavailable")
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    ensure!(
+                        !remaining.is_zero(),
+                        AwsApiError {
+                            code: "CommandInterrupted".into()
+                        }
+                    );
+                    std::thread::sleep(remaining.min(Duration::from_millis(10)));
+                }
+            }
+        };
+        ensure!(
+            started.elapsed() < timeout,
+            AwsApiError {
+                code: "CommandInterrupted".into()
+            }
+        );
+        if let Some(session) = cache.as_ref().filter(|session| session.valid()) {
+            return Ok((Some(session.value.clone()), None));
+        }
+        *cache = None;
+        // The standard CLI resolves the existing private credential_process.
+        // Its stdout/stderr and our cache never touch disk or public diagnostics.
+        let mut command = self.command(None);
+        command.args(["configure", "export-credentials", "--format", "process"]);
+        let output = run_command_in_memory(&mut command, timeout.saturating_sub(started.elapsed()))
+            .map_err(|_| AwsApiError {
+                code: "CommandInterrupted".into(),
+            })
+            .context("role credential export did not complete")?;
+        if !output.success {
+            return Err(eyre::Report::from(AwsApiError {
+                code: aws_error_code(&output.stderr),
+            }))
+            .context("role credential export failed");
+        }
+        let value: Value = serde_json::from_str(&output.stdout)
+            .map_err(|_| eyre::eyre!("invalid role credential export"))?;
+        ensure!(
+            value["Version"] == 1,
+            "invalid role credential export version"
+        );
+        for key in [
+            "AccessKeyId",
+            "SecretAccessKey",
+            "SessionToken",
+            "Expiration",
+        ] {
+            ensure!(
+                value[key].as_str().is_some_and(|v| !v.is_empty()
+                    && v.len() <= 16384
+                    && !v.chars().any(char::is_control)),
+                "incomplete role credential export"
+            );
+        }
+        let session = RoleCredentials {
+            value,
+            acquired: started,
+        };
+        ensure!(
+            session.valid(),
+            "role credentials expired or too near expiry"
+        );
+        // Authenticate the exported bytes, not just the configured provider.
+        // A static source credential must never masquerade as the selected role.
+        // invoke deserializes CallerIdentity and verifies the exact role before
+        // these credentials can be published to any waiting batch worker.
+        let identity = self.invoke(
+            "sts",
+            "get-caller-identity",
+            json!({}),
+            &[],
+            timeout.saturating_sub(started.elapsed()),
+            Some(&session.value),
+        )?;
+        ensure!(
+            session.valid(),
+            "role credentials expired or too near expiry"
+        );
+        let value = session.value.clone();
+        *cache = Some(session);
+        Ok((Some(value), Some(identity)))
+    }
+
+    fn command(&self, credentials: Option<&Value>) -> Command {
         let mut command = Command::new(&self.executable);
         // Start from the captured environment. No ambient credential or endpoint
         // variable can change the account after the initial validation.
@@ -583,26 +794,56 @@ impl AwsApi for AwsCli {
             .env("AWS_EC2_METADATA_DISABLED", "true")
             .env("AWS_MAX_ATTEMPTS", "1")
             .env("AWS_PAGER", "")
-            .env("AWS_CLI_AUTO_PROMPT", "off")
-            .args([
-                "--profile",
-                &self.selection.profile,
-                "--region",
-                &self.selection.region,
-                "--output",
-                "json",
-                // API error classification uses the legacy error-code prefix.
-                // Pin stderr separately from stdout and the profile setting.
-                "--cli-error-format",
-                "legacy",
-                "--no-cli-pager",
-                "--cli-connect-timeout",
-                "10",
-                "--cli-read-timeout",
-                "30",
-                service,
-                operation,
-            ]);
+            .env("AWS_CLI_AUTO_PROMPT", "off");
+        if let Some(credentials) = credentials {
+            // An explicit --profile suppresses the CLI's environment provider.
+            // Only internally exported and authenticated credentials reach here.
+            command
+                .env(
+                    "AWS_ACCESS_KEY_ID",
+                    credentials["AccessKeyId"].as_str().unwrap(),
+                )
+                .env(
+                    "AWS_SECRET_ACCESS_KEY",
+                    credentials["SecretAccessKey"].as_str().unwrap(),
+                )
+                .env(
+                    "AWS_SESSION_TOKEN",
+                    credentials["SessionToken"].as_str().unwrap(),
+                );
+        } else {
+            command.args(["--profile", &self.selection.profile]);
+        }
+        command.args([
+            "--region",
+            &self.selection.region,
+            "--output",
+            "json",
+            // API error classification uses the legacy error-code prefix.
+            // Pin stderr separately from stdout and the profile setting.
+            "--cli-error-format",
+            "legacy",
+            "--no-cli-pager",
+            "--cli-connect-timeout",
+            "10",
+            "--cli-read-timeout",
+            "30",
+        ]);
+        command
+    }
+
+    fn invoke(
+        &self,
+        service: &str,
+        operation: &str,
+        input: Value,
+        extra_args: &[String],
+        timeout: Duration,
+        credentials: Option<&Value>,
+    ) -> Result<Value> {
+        ensure!(!timeout.is_zero(), "AWS call budget exhausted");
+        let mut command = self.command(credentials);
+        command.args([service, operation]);
         if service == "s3api" && operation == "get-object" {
             append_metadata_get_args(&mut command, input, extra_args, &self.selection.account_id)?;
         } else {
@@ -632,11 +873,11 @@ impl AwsApi for AwsCli {
                 "AWS {service} {operation} subprocess failed (exit code {exit_code})"
             )));
         }
-        if output.stdout.trim().is_empty() {
-            return Ok(json!({}));
-        }
-        let value: Value =
-            serde_json::from_str(&output.stdout).context("AWS CLI returned malformed JSON")?;
+        let value: Value = if output.stdout.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&output.stdout).context("AWS CLI returned malformed JSON")?
+        };
         if service == "sts" && operation == "get-caller-identity" {
             if let Some(role) = &self.expected_role {
                 let identity: CallerIdentity = serde_json::from_value(value.clone())
@@ -1178,10 +1419,10 @@ pub fn verify_backend(
     selection: &AwsSelection,
     team: &TeamDefinition,
 ) -> Result<()> {
-    let receipt = verify_backend_ownership(api, selection, team)?;
+    let receipt = verify_backend_identity(api, selection, team)?;
     let bucket = team.backend_bucket()?;
     let input = json!({"Bucket":bucket,"ExpectedBucketOwner":team.aws.account_id});
-    verify_backend_settings(api, &input, team, &receipt)
+    verify_backend_reads(api, &input, team, &receipt)
 }
 
 /// Cleanup needs the original backend identity and working state access, not
@@ -1204,6 +1445,23 @@ fn verify_backend_ownership(
     selection: &AwsSelection,
     team: &TeamDefinition,
 ) -> Result<BootstrapReceipt> {
+    let receipt = verify_backend_identity(api, selection, team)?;
+    let input = json!({"Bucket":receipt.request.bucket,"ExpectedBucketOwner":team.aws.account_id});
+    api.call("s3api", "head-bucket", input.clone(), &[])?;
+    verify_bucket_region(api, &input, &team.aws.region)?;
+    verify_tags(
+        &api.call("s3api", "get-bucket-tagging", input, &[])?,
+        "TagSet",
+        &receipt,
+    )?;
+    Ok(receipt)
+}
+
+fn verify_backend_identity(
+    api: &dyn AwsApi,
+    selection: &AwsSelection,
+    team: &TeamDefinition,
+) -> Result<BootstrapReceipt> {
     team.validate()?;
     ensure!(
         selection.account_id == team.aws.account_id && selection.region == team.aws.region,
@@ -1211,10 +1469,7 @@ fn verify_backend_ownership(
     );
     verify_identity(api, selection)?;
     let bucket = team.backend_bucket()?;
-    let input = json!({"Bucket":bucket,"ExpectedBucketOwner":team.aws.account_id});
-    api.call("s3api", "head-bucket", input.clone(), &[])?;
-    verify_bucket_region(api, &input, &team.aws.region)?;
-    let receipt = BootstrapReceipt {
+    Ok(BootstrapReceipt {
         version: 1,
         request: BootstrapRequest {
             team_id: team.team_id.clone(),
@@ -1229,28 +1484,25 @@ fn verify_backend_ownership(
         bucket_creation_started: true,
         bucket_created: true,
         complete: true,
-    };
-    verify_tags(
-        &api.call("s3api", "get-bucket-tagging", input.clone(), &[])?,
-        "TagSet",
-        &receipt,
-    )?;
-    Ok(receipt)
+    })
 }
 
 #[cfg_attr(
     feature = "profiling",
-    tracing::instrument(skip_all, name = "aws.verify_backend_settings")
+    tracing::instrument(skip_all, name = "aws.verify_backend_reads")
 )]
-fn verify_backend_settings(
+fn verify_backend_reads(
     api: &dyn AwsApi,
     input: &Value,
     team: &TeamDefinition,
     receipt: &BootstrapReceipt,
 ) -> Result<()> {
-    // Ownership is already established. These read-only settings are independent,
-    // but every result must validate before the caller can proceed.
-    let calls: Vec<_> = [
+    // Identity is admitted before dispatch. Ownership, settings and key reads
+    // are independent and read-only; every check still gates caller mutations.
+    let mut calls: Vec<_> = [
+        "head-bucket",
+        "get-bucket-location",
+        "get-bucket-tagging",
         "get-bucket-versioning",
         "get-public-access-block",
         "get-bucket-ownership-controls",
@@ -1258,18 +1510,40 @@ fn verify_backend_settings(
         "get-bucket-policy",
     ]
     .into_iter()
-    .map(|operation| AwsCall {
-        operation,
-        input: input.clone(),
-        extra_args: Vec::new(),
+    .map(|operation| AwsServiceCall {
+        service: "s3api",
+        call: AwsCall {
+            operation,
+            input: input.clone(),
+            extra_args: Vec::new(),
+        },
     })
     .collect();
-    let responses = api.batch_call("s3api", &calls)?;
+    calls.extend(
+        [
+            "describe-key",
+            "list-resource-tags",
+            "get-key-rotation-status",
+        ]
+        .into_iter()
+        .map(|operation| AwsServiceCall {
+            service: "kms",
+            call: AwsCall {
+                operation,
+                input: json!({"KeyId":team.state.kms_key_arn}),
+                extra_args: Vec::new(),
+            },
+        }),
+    );
+    let responses = api.batch_call_cross_service(&calls)?;
     ensure!(
         responses.len() == calls.len(),
-        "incomplete backend settings"
+        "incomplete backend verification responses"
     );
     let mut responses = responses.into_iter();
+    responses.next().unwrap()?; // head-bucket establishes expected ownership.
+    validate_bucket_region(&responses.next().unwrap()?, &team.aws.region)?;
+    verify_tags(&responses.next().unwrap()?, "TagSet", receipt)?;
     let versioning = responses.next().unwrap()?;
     ensure!(
         versioning.get("Status") == Some(&json!("Enabled")),
@@ -1297,13 +1571,9 @@ fn verify_backend_settings(
         parse_policy(&responses.next().unwrap()?)? == tls_policy(team.backend_bucket()?),
         "state bucket policy does not match the managed TLS policy"
     );
-    verify_key(api, &team.state.kms_key_arn, receipt)?;
-    let rotation = api.call(
-        "kms",
-        "get-key-rotation-status",
-        json!({"KeyId":team.state.kms_key_arn}),
-        &[],
-    )?;
+    validate_key_metadata(&responses.next().unwrap()?, &team.state.kms_key_arn)?;
+    validate_key_tags(&responses.next().unwrap()?, receipt)?;
+    let rotation = responses.next().unwrap()?;
     ensure!(
         rotation.get("KeyRotationEnabled") == Some(&json!(true)),
         "state KMS key rotation must be enabled"
@@ -1317,6 +1587,10 @@ fn verify_backend_settings(
 )]
 fn verify_bucket_region(api: &dyn AwsApi, input: &Value, expected: &str) -> Result<()> {
     let location = api.call("s3api", "get-bucket-location", input.clone(), &[])?;
+    validate_bucket_region(&location, expected)
+}
+
+fn validate_bucket_region(location: &Value, expected: &str) -> Result<()> {
     ensure!(
         location.get("LocationConstraint").is_some(),
         "missing state bucket location"
@@ -1343,6 +1617,12 @@ fn verify_key(api: &dyn AwsApi, arn: &str, receipt: &BootstrapReceipt) -> Result
         },
     )?;
     let key = api.call("kms", "describe-key", json!({"KeyId":arn}), &[])?;
+    validate_key_metadata(&key, arn)?;
+    let tags = api.call("kms", "list-resource-tags", json!({"KeyId":arn}), &[])?;
+    validate_key_tags(&tags, receipt)
+}
+
+fn validate_key_metadata(key: &Value, arn: &str) -> Result<()> {
     ensure!(
         key.pointer("/KeyMetadata/Arn") == Some(&json!(arn))
             && key.pointer("/KeyMetadata/KeyManager") == Some(&json!("CUSTOMER"))
@@ -1351,12 +1631,15 @@ fn verify_key(api: &dyn AwsApi, arn: &str, receipt: &BootstrapReceipt) -> Result
             && key.pointer("/KeyMetadata/KeyState") == Some(&json!("Enabled")),
         "KMS key must be the enabled symmetric customer key in the recovery receipt"
     );
-    let tags = api.call("kms", "list-resource-tags", json!({"KeyId":arn}), &[])?;
+    Ok(())
+}
+
+fn validate_key_tags(tags: &Value, receipt: &BootstrapReceipt) -> Result<()> {
     ensure!(
         tags.get("Truncated").is_none_or(|v| v == &json!(false)),
         "KMS ownership tags response is incomplete"
     );
-    verify_tags(&tags, "Tags", receipt)
+    verify_tags(tags, "Tags", receipt)
 }
 
 #[cfg_attr(
@@ -1633,6 +1916,11 @@ pub enum ConditionalWrite {
 /// update or delete method; leases are released through a compare-and-swap tombstone.
 pub trait MetadataStore {
     fn get(&self, key: &str) -> Result<Option<MetadataObject>>;
+    /// Independent reads with input-ordered individual outcomes. The serial
+    /// default supports non-thread-safe stores; callers validate before writing.
+    fn get_batch(&self, keys: &[&str]) -> Result<Vec<Result<Option<MetadataObject>>>> {
+        Ok(keys.iter().map(|key| self.get(key)).collect())
+    }
     fn put(&self, key: &str, bytes: &[u8], condition: WriteCondition) -> Result<ConditionalWrite>;
 }
 
@@ -1660,6 +1948,19 @@ impl<'a> S3Metadata<'a> {
             json!({"Bucket":self.team.backend_bucket()?,"Key":key,"ExpectedBucketOwner":self.team.aws.account_id}),
         )
     }
+
+    fn read_reply(reply: Result<Value>, file: &Path) -> Result<Option<MetadataObject>> {
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(error) if error_is(&error, &["NoSuchKey", "404", "NotFound"]) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let bytes = read_record(file)?;
+        Ok(Some(MetadataObject {
+            bytes,
+            etag: response_etag(&reply)?,
+        }))
+    }
 }
 
 impl MetadataStore for S3Metadata<'_> {
@@ -1671,21 +1972,45 @@ impl MetadataStore for S3Metadata<'_> {
         let file = NamedTempFile::new()?;
         let mut input = self.input(key)?;
         input["Range"] = json!(format!("bytes=0-{MAX_RECORD_BYTES}"));
-        let reply = match self.api.call(
+        let reply = self.api.call(
             "s3api",
             "get-object",
             input,
             &[file.path().to_string_lossy().into_owned()],
-        ) {
-            Ok(reply) => reply,
-            Err(error) if error_is(&error, &["NoSuchKey", "404", "NotFound"]) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let bytes = read_record(file.path())?;
-        Ok(Some(MetadataObject {
-            bytes,
-            etag: response_etag(&reply)?,
-        }))
+        );
+        Self::read_reply(reply, file.path())
+    }
+
+    fn get_batch(&self, keys: &[&str]) -> Result<Vec<Result<Option<MetadataObject>>>> {
+        // Keep a distinct output file alive for each request until all workers
+        // have joined. Expected missing-object errors must not suppress peers.
+        let files = keys
+            .iter()
+            .map(|_| NamedTempFile::new())
+            .collect::<std::io::Result<Vec<_>>>()?;
+        let calls = keys
+            .iter()
+            .zip(&files)
+            .map(|(key, file)| {
+                let mut input = self.input(key)?;
+                input["Range"] = json!(format!("bytes=0-{MAX_RECORD_BYTES}"));
+                Ok(AwsCall {
+                    operation: "get-object",
+                    input,
+                    extra_args: vec![file.path().to_string_lossy().into_owned()],
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let replies = self.api.batch_call_all("s3api", &calls)?;
+        ensure!(
+            replies.len() == keys.len(),
+            "incomplete metadata read responses"
+        );
+        Ok(replies
+            .into_iter()
+            .zip(&files)
+            .map(|(reply, file)| Self::read_reply(reply, file.path()))
+            .collect())
     }
 
     #[cfg_attr(
@@ -1838,7 +2163,14 @@ fn read_lease(
     store: &dyn MetadataStore,
     reservation: &NetworkReservation,
 ) -> Result<Option<LeaseHandle>> {
-    let Some(object) = store.get(&reservation.lease_key())? else {
+    validate_lease(store.get(&reservation.lease_key())?, reservation)
+}
+
+fn validate_lease(
+    object: Option<MetadataObject>,
+    reservation: &NetworkReservation,
+) -> Result<Option<LeaseHandle>> {
+    let Some(object) = object else {
         return Ok(None);
     };
     let record: LeaseRecord =
@@ -1892,8 +2224,11 @@ pub fn acquire_lease(
         "lease owner IDs must not be nil"
     );
     let expires_at = expiry(now, ttl_seconds)?;
-    ensure_reservation(store, reservation)?;
-    let old = read_lease(store, reservation)?;
+    let reads = store.get_batch(&[&reservation.key(), &reservation.lease_key()])?;
+    ensure!(reads.len() == 2, "incomplete lease admission responses");
+    let mut reads = reads.into_iter();
+    validate_reservation(reads.next().unwrap()?, reservation)?;
+    let old = validate_lease(reads.next().unwrap()?, reservation)?;
     if let Some(previous) = &old {
         if !previous.record.released {
             ensure!(
@@ -1969,9 +2304,15 @@ fn acquire_lease_record(
     tracing::instrument(skip_all, name = "aws.ensure_reservation")
 )]
 fn ensure_reservation(store: &dyn MetadataStore, reservation: &NetworkReservation) -> Result<()> {
-    let object = store
-        .get(&reservation.key())?
-        .context("network ID must be reserved before acquiring a deployment lease")?;
+    validate_reservation(store.get(&reservation.key())?, reservation)
+}
+
+fn validate_reservation(
+    object: Option<MetadataObject>,
+    reservation: &NetworkReservation,
+) -> Result<()> {
+    let object =
+        object.context("network ID must be reserved before acquiring a deployment lease")?;
     let saved: NetworkReservation = serde_json::from_slice(&object.bytes)?;
     ensure!(
         saved == *reservation,

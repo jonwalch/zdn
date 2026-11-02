@@ -1,7 +1,7 @@
 //! Offline public-adapter handshake, not deployment authorization.
 //!
-//! Only `describe` is supported in this first boundary slice. Compile/render,
-//! package selection and lifecycle gates must not consume this as verification.
+//! Typed offline describe/compile/render. These are not deployment authorization:
+//! package selection and host lifecycle gates must separately authenticate inputs.
 //! The explicitly trusted executable runs with a scrubbed environment, not an OS
 //! sandbox. Ordinary same-group descendants are killed; escaping processes and
 //! parent crashes require the existing host supervisor at future host integration.
@@ -16,6 +16,9 @@ use std::{
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+
+pub mod contract;
+pub mod package;
 
 pub const PROTOCOL: &str = "zdn-public-chain-adapter/v1";
 pub const PROTOCOL_ARGUMENT: &str = "--zdn-public-chain-adapter-v1";
@@ -117,11 +120,183 @@ pub struct VerifiedExecutable {
     directory: tempfile::TempDir,
     program: PathBuf,
     selection: TrustedExecutable,
+    sandbox: Option<crate::host::adapter_sandbox::Sandbox>,
 }
 
 impl VerifiedExecutable {
+    pub(crate) fn with_sandbox(mut self, sandbox: crate::host::adapter_sandbox::Sandbox) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Decode a pinned raw bundle in the companion as well as independently
+    /// checking its byte inventory here. No input path comes from the protocol.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "adapter.compile")
+    )]
+    pub fn compile(
+        self,
+        input: &contract::CompileInput,
+        bundle: &[u8],
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<PinnedResult<contract::Compiled>> {
+        let deadline = deadline.min(Instant::now() + Duration::from_secs(30));
+        if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
+            return Err(Failure::Deadline);
+        }
+        let block_pins = input.validate(bundle)?;
+        self.stage_bundle(bundle)?;
+        let output = self.exchange(
+            Operation::Compile,
+            input,
+            &input.descriptor,
+            &input.seed_bundle,
+            None,
+            deadline,
+            cancelled,
+        )?;
+        let result = PinnedResult::<contract::Compiled>::read(output)?;
+        result.value.validate(input, &block_pins)?;
+        Ok(result)
+    }
+
+    /// Freshly bound render; security validation precedes use or equality.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "adapter.render")
+    )]
+    pub fn render(
+        self,
+        input: &contract::RenderInput,
+        bundle: &[u8],
+        compiled: &PinnedResult<contract::Compiled>,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<PinnedResult<contract::Rendered>> {
+        let deadline = deadline.min(Instant::now() + Duration::from_secs(30));
+        if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
+            return Err(Failure::Deadline);
+        }
+        let pins = input.public.validate(bundle)?;
+        input.options.validate_for_render(input.identity_only)?;
+        compiled.value.validate(&input.public, &pins)?;
+        if input.compiled_sha256 != compiled.pin.sha256 {
+            return Err(Failure::InvalidPublicInput);
+        }
+        self.stage_bundle(bundle)?;
+        let output = self.exchange(
+            Operation::Render,
+            input,
+            &input.public.descriptor,
+            &input.public.seed_bundle,
+            Some(&input.compiled_sha256),
+            deadline,
+            cancelled,
+        )?;
+        let result = PinnedResult::<contract::Rendered>::read(output)?;
+        contract::validate_render(&result.value, input)?;
+        Ok(result)
+    }
+
+    fn stage_bundle(&self, bundle: &[u8]) -> Result<()> {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o400)
+            .open(self.directory.path().join("seed-blocks.bin"))
+            .map_err(|_| Failure::Unavailable)?;
+        file.write_all(bundle).map_err(|_| Failure::Unavailable)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exchange<T: Serialize>(
+        &self,
+        operation: Operation,
+        input: &T,
+        descriptor: &contract::Descriptor,
+        bundle: &contract::Pin,
+        compiled: Option<&str>,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<u8>> {
+        #[derive(Deserialize, Serialize, PartialEq, Eq)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Context {
+            public_descriptor_sha256: String,
+            input_sha256: String,
+            seed_bundle_sha256: String,
+            compiled_result_sha256: Option<String>,
+        }
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Request<'a, T> {
+            protocol: &'static str,
+            operation: Operation,
+            request_id: String,
+            adapter_selection_sha256: &'a str,
+            context: &'a Context,
+            input: &'a T,
+        }
+        #[derive(Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Response {
+            protocol: String,
+            operation: Operation,
+            request_id: String,
+            adapter_selection_sha256: String,
+            context: Context,
+            result: Box<serde_json::value::RawValue>,
+        }
+        let context = Context {
+            public_descriptor_sha256: contract::Pin::of(
+                &serde_json::to_vec(descriptor).map_err(|_| Failure::InvalidPublicInput)?,
+            )
+            .sha256,
+            input_sha256: contract::Pin::of(
+                &serde_json::to_vec(input).map_err(|_| Failure::InvalidPublicInput)?,
+            )
+            .sha256,
+            seed_bundle_sha256: bundle.sha256.clone(),
+            compiled_result_sha256: compiled.map(str::to_owned),
+        };
+        let request = Request {
+            protocol: PROTOCOL,
+            operation,
+            request_id: Uuid::new_v4().to_string(),
+            adapter_selection_sha256: &self.selection.adapter_selection_sha256,
+            context: &context,
+            input,
+        };
+        let bytes = serde_json::to_vec(&request).map_err(|_| Failure::InvalidPublicInput)?;
+        if bytes.len() > MAX_STDOUT {
+            return Err(Failure::InvalidPublicInput);
+        }
+        let bytes = self.execute(
+            &bytes,
+            deadline.min(Instant::now() + Duration::from_secs(30)),
+            cancelled,
+        )?;
+        let response: Response = contract::parse(&bytes).map_err(|_| Failure::InvalidOutput)?;
+        if response.protocol != PROTOCOL
+            || response.operation != operation
+            || response.request_id != request.request_id
+            || response.adapter_selection_sha256 != self.selection.adapter_selection_sha256
+            || response.context != context
+        {
+            return Err(Failure::InvalidOutput);
+        }
+        Ok(response.result.get().as_bytes().to_vec())
+    }
+
     /// Inspect/copy bytes only; never runs the selected program. The source must
     /// be an absolute regular non-symlink file. No PATH lookup or download.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "adapter.snapshot")
+    )]
     pub fn verify(path: &Path, selection: TrustedExecutable) -> Result<Self> {
         use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
         if !path.is_absolute()
@@ -151,16 +326,6 @@ impl VerifiedExecutable {
         {
             return Err(Failure::InvalidPublicInput);
         }
-        let mut bytes = Vec::new();
-        input
-            .take(selection.executable_bytes + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| Failure::Unavailable)?;
-        if bytes.len() as u64 != selection.executable_bytes
-            || hex::encode(Sha256::digest(&bytes)) != selection.executable_sha256
-        {
-            return Err(Failure::InvalidPublicInput);
-        }
         let directory = tempfile::tempdir().map_err(|_| Failure::Unavailable)?;
         let program = directory.path().join("adapter");
         let mut output = OpenOptions::new()
@@ -169,17 +334,41 @@ impl VerifiedExecutable {
             .mode(0o700)
             .open(&program)
             .map_err(|_| Failure::Unavailable)?;
-        output.write_all(&bytes).map_err(|_| Failure::Unavailable)?;
+        // Hash exactly the bytes copied into the private snapshot. Never reopen
+        // the caller's path after checking it, or retain the whole executable.
+        let mut input = input.take(selection.executable_bytes + 1);
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let count = input.read(&mut buffer).map_err(|_| Failure::Unavailable)?;
+            if count == 0 {
+                break;
+            }
+            bytes += count as u64;
+            if bytes > selection.executable_bytes {
+                return Err(Failure::InvalidPublicInput);
+            }
+            hash.update(&buffer[..count]);
+            output
+                .write_all(&buffer[..count])
+                .map_err(|_| Failure::Unavailable)?;
+        }
+        if bytes != selection.executable_bytes
+            || hex::encode(hash.finalize()) != selection.executable_sha256
+        {
+            return Err(Failure::InvalidPublicInput);
+        }
         drop(output);
         Ok(Self {
             directory,
             program,
             selection,
+            sandbox: None,
         })
     }
 
-    /// Only the handshake is implemented. Reject later operations before exec;
-    /// they need typed public inventory/result/render validation, not opaque JSON.
+    /// Handshake entry point. Compile/render require their typed entry points.
     /// Consume the snapshot: its trusted child can mutate its own working directory.
     ///
     /// ```compile_fail,E0382
@@ -190,6 +379,10 @@ impl VerifiedExecutable {
     ///     let _ = executable.invoke(Operation::Describe, deadline, cancelled);
     /// }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "adapter.describe")
+    )]
     pub fn invoke(
         self,
         operation: Operation,
@@ -244,6 +437,10 @@ impl VerifiedExecutable {
         Ok(result)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "adapter.execute")
+    )]
     fn execute(&self, input: &[u8], deadline: Instant, cancelled: &AtomicBool) -> Result<Vec<u8>> {
         use std::{
             io::Write,
@@ -253,7 +450,12 @@ impl VerifiedExecutable {
         // Existing dependencies::run_command_in_memory closes stdin and uses
         // one 1 MiB bound. HostCommand requires Linux host receipts/helper CLI.
         // Neither can carry this duplex protocol without broad changes.
-        let mut command = Command::new(&self.program);
+        let mut command = match &self.sandbox {
+            Some(sandbox) => sandbox
+                .command(self.directory.path())
+                .map_err(|_| Failure::Unavailable)?,
+            None => Command::new(&self.program),
+        };
         command
             .arg(PROTOCOL_ARGUMENT)
             .env_clear()
@@ -336,6 +538,32 @@ impl VerifiedExecutable {
                 std::thread::sleep(Duration::from_millis(5));
             }
         }
+    }
+}
+
+/// Exact deterministic result bytes, not a hash of an unspecified JSON rewrite.
+pub struct PinnedResult<T> {
+    value: T,
+    bytes: Vec<u8>,
+    pin: contract::Pin,
+}
+impl<T: serde::de::DeserializeOwned + Serialize> PinnedResult<T> {
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub fn pin(&self) -> &contract::Pin {
+        &self.pin
+    }
+    fn read(bytes: Vec<u8>) -> Result<Self> {
+        let value = contract::parse(&bytes).map_err(|_| Failure::InvalidOutput)?;
+        if serde_json::to_vec(&value).map_err(|_| Failure::InvalidOutput)? != bytes {
+            return Err(Failure::InvalidOutput);
+        }
+        let pin = contract::Pin::of(&bytes);
+        Ok(Self { value, bytes, pin })
     }
 }
 

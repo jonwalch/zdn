@@ -29,11 +29,10 @@ use std::{
 
 use eyre::{ensure, ContextCompat, Result};
 
-use super::{device::BlockDevice, probe, Installation};
+use super::{device::BlockDevice, probe, Installation, VolumeSpec};
 use crate::host::{
     command::{Executor, HostCommand},
     files::Directory,
-    HostInstallSpec,
 };
 
 /// Caller-trusted root and expected owner; never infer ownership from the tree.
@@ -56,7 +55,7 @@ pub struct Tools {
     tracing::instrument(skip_all, name = "host.volume.prepare")
 )]
 pub fn prepare(
-    spec: &HostInstallSpec,
+    spec: &impl VolumeSpec,
     root: Root<'_>,
     tools: &Tools,
     installation: &mut Installation<'_>,
@@ -109,7 +108,7 @@ pub fn prepare(
                 .directory
                 .require_absent("format-intent.json")?;
             let mut device = BlockDevice::open(&observed.device)?;
-            if let Some(authorization) = &spec.new_volume {
+            if let Some(authorization) = spec.new_volume() {
                 ensure!(
                     authorization.size_bytes == size_bytes,
                     "new-volume size differs"
@@ -124,7 +123,7 @@ pub fn prepare(
             device.recheck_path()?;
             check(deadline, cancelled)?;
             installation.begin_format()?;
-            if spec.new_volume.is_some() {
+            if spec.new_volume().is_some() {
                 device.require_unused()?;
             }
             device.recheck_path()?;

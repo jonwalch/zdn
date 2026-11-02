@@ -24,6 +24,51 @@ pub fn wait_for_rpc(
     request_timeout: Duration,
     deadline: Duration,
 ) -> Result<()> {
+    wait_prepared(
+        PreparedRules::new(manifest)?,
+        endpoint,
+        cookie,
+        clock,
+        request_timeout,
+        deadline,
+        crate::rpc_limits::BodyClass::Default,
+    )
+    .map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "chain.startup.wait_external")
+)]
+pub(crate) fn wait_external(
+    compiled: &crate::public_chain_adapter::contract::Compiled,
+    endpoint: &str,
+    cookie: &Path,
+    clock: &impl Clock,
+    request_timeout: Duration,
+    deadline: Duration,
+) -> Result<HttpNodeRpc> {
+    wait_prepared(
+        PreparedRules::external(compiled),
+        endpoint,
+        cookie,
+        clock,
+        request_timeout,
+        deadline,
+        crate::rpc_limits::BodyClass::LargeHexV1,
+    )
+}
+
+fn wait_prepared(
+    rules: PreparedRules,
+    endpoint: &str,
+    cookie: &Path,
+    clock: &impl Clock,
+    request_timeout: Duration,
+    deadline: Duration,
+    body_class: crate::rpc_limits::BodyClass,
+) -> Result<HttpNodeRpc> {
     ensure!(
         !deadline.is_zero() && deadline <= Duration::from_secs(3600),
         "RPC startup deadline must be positive and at most 3600 seconds"
@@ -34,7 +79,6 @@ pub fn wait_for_rpc(
             && request_timeout <= deadline,
         "RPC startup request timeout must be positive, at most 60 seconds, and within the deadline"
     );
-    let rules = PreparedRules::new(manifest)?;
     let start = clock.elapsed();
     let remaining = || {
         deadline
@@ -45,11 +89,11 @@ pub fn wait_for_rpc(
     // The independent attempt bound also limits a stalled or faulty clock.
     for _ in 0..4096 {
         let timeout = request_timeout.min(remaining()?);
-        match HttpNodeRpc::new(endpoint, cookie) {
+        match HttpNodeRpc::with_body_class(endpoint, cookie, body_class) {
             Ok(client) => match rules.verify(&client, timeout) {
                 Ok(()) => {
                     remaining()?;
-                    return Ok(());
+                    return Ok(client);
                 }
                 Err(error)
                     if matches!(

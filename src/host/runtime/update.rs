@@ -428,7 +428,7 @@ fn verify_units(
 }
 
 /// Authenticate the effective unit as well as its current finite state.
-fn service(
+pub(in crate::host) fn service(
     systemctl: &Path,
     name: &str,
     executor: &mut Executor,

@@ -67,7 +67,12 @@ pub fn export_downloaded_config(
     );
     let parsed: Value = serde_json::from_slice(manifest)?;
     let record = ImageRecord {
-        api_version: image::API_VERSION.into(),
+        api_version: if contract.required_capabilities.build_requirements.is_some() {
+            image::FEATURE_API_VERSION
+        } else {
+            image::API_VERSION
+        }
+        .into(),
         image: format!("{repository}@{digest}"),
         config_digest: parsed["config"]["digest"]
             .as_str()
@@ -87,7 +92,7 @@ pub fn export_downloaded_config(
         record.image.split_once('@').map(|v| v.0) == Some(repository),
         "repository must be an untagged supported image repository"
     );
-    let verified = image::validate_manifest_bytes(&record, manifest)?;
+    let verified = contract.validate_manifest_bytes(&record, manifest)?;
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -117,7 +122,7 @@ pub fn export_downloaded_config(
         .map_err(|_| eyre::eyre!("configuration download failed"))?;
     file.rewind()?;
     let config = bounded(file, image::MAX_CONFIG_BYTES)?;
-    image::validate_config_bytes(&record, &verified, &config)?;
+    contract.validate_config_bytes(&record, &verified, &config)?;
     let result = serde_json::to_vec(&BuildResult {
         contract_sha256: contract.fingerprint()?,
         image: record,

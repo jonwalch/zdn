@@ -103,12 +103,30 @@ printf '%s' '{contract_b64}' | base64 --decode > contract.json
     // No source fingerprint: source changes should reuse intermediate layers.
     // The repository Dockerfile defines the toolchain; BuildKit's content keys
     // invalidate changed recipe/toolchain steps, not a guessed compiler version.
-    let recipe = hex::encode(Sha256::digest(serde_json::to_vec(&contract.recipe)?));
+    let recipe_bytes = if contract.required_capabilities.build_requirements.is_some() {
+        serde_json::to_vec(&(&contract.recipe, &contract.required_capabilities))?
+    } else {
+        serde_json::to_vec(&contract.recipe)?
+    };
+    let recipe = hex::encode(Sha256::digest(recipe_bytes));
     let namespace = format!(
         "{}-linux-amd64-standard7-buildx-local-v1-{recipe}",
         infra.project_name
     );
     let cache_dir = format!("/tmp/zdn-layer-cache/{namespace}");
+    // Ordinary empty recipes retain the Dockerfile's original default. Explicit
+    // compiled requirements always supply the one supported argument, even empty.
+    let features_arg = if contract.required_capabilities.build_requirements.is_some() {
+        format!(
+            " --build-arg {}",
+            quote(&format!(
+                "FEATURES={}",
+                contract.recipe.cargo_features.join(",")
+            ))
+        )
+    } else {
+        String::new()
+    };
     let script = format!(
         r#"set -euo pipefail
 test "$(uname -m)" = x86_64
@@ -133,7 +151,7 @@ if test -f "$cache_dir/index.json"; then
 fi
 # mode=max exports intermediate dependency/compiler layers, NOT arbitrary
 # RUN --mount=type=cache contents. The source Dockerfile remains the contract.
-docker buildx build --push --provenance=false --sbom=false --platform linux/amd64 --target runtime "${{cache_args[@]}}" --cache-to "type=local,dest=$cache_next,mode=max,ignore-error=true" -f source/{dockerfile} -t {uri}:{attempt} source/{context}
+docker buildx build --push --provenance=false --sbom=false --platform linux/amd64 --target runtime{features_arg} "${{cache_args[@]}}" --cache-to "type=local,dest=$cache_next,mode=max,ignore-error=true" -f source/{dockerfile} -t {uri}:{attempt} source/{context}
 aws ecr batch-get-image --registry-id {account} --repository-name {repo} --image-ids imageTag={attempt} --accepted-media-types application/vnd.docker.distribution.manifest.v2+json application/vnd.oci.image.manifest.v1+json > registry.json
 config_digest=$(jq -er '.images[0].imageManifest | fromjson | .config.digest | select(test("^sha256:[0-9a-f]{{64}}$"))' registry.json)
 aws ecr get-download-url-for-layer --registry-id {account} --repository-name {repo} --layer-digest "$config_digest" > config-download.json

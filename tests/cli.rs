@@ -2212,6 +2212,10 @@ fn native_runtime_protocol_is_explicit_and_needs_no_external_tools() {
             expected.push("zdn-lightwallet-runtime/v1alpha1");
             expected.push("zdn-lightwallet-install-runtime/v1alpha1");
             expected.push("zdn-native-image-update-execution/v1alpha1");
+            expected.push("zdn-external-native-provisioning/v1");
+            expected.push("zdn-external-runtime/v1");
+            expected.push("zdn-external-image-update/v1");
+            expected.push("zdn-external-qualification/v1");
         }
     }
     assert_eq!(report["capabilities"], serde_json::json!(expected));
@@ -2247,6 +2251,11 @@ fn native_runtime_protocol_is_explicit_and_needs_no_external_tools() {
             cfg!(all(target_os = "linux", target_arch = "x86_64")),
         ),
         ("zdn-lightwallet-install-runtime/v999", false),
+        (
+            "zdn-external-qualification/v1",
+            cfg!(all(target_os = "linux", target_arch = "x86_64")),
+        ),
+        ("zdn-external-qualification/v999", false),
     ] {
         let required = command()
             .args(["__runtime-capabilities", "--require", protocol])
@@ -2392,5 +2401,88 @@ fn native_capacity_command_distinguishes_install_and_foundation_limits_without_t
                 "ancestor_cpu_quota_millis": if exclude {vec![1500]} else {vec![1280,1500]},
             })
         );
+    }
+}
+
+#[test]
+fn explicit_external_config_requires_external_inputs_before_operational_effects() {
+    let fixture = Fixture::new();
+    let mut config = zdn::config::Config::draft(
+        "external-fixture".into(),
+        "developer".into(),
+        zdn::config::Source {
+            image: Some(format!("example@sha256:{}", "ab".repeat(32))),
+            ..Default::default()
+        },
+        zdn::config::Size::Medium,
+    )
+    .unwrap();
+    config.chain = Some(zdn::config::ChainSelection::External {
+        package_sha256: "ab".repeat(32),
+        adapter_selection_sha256: "cd".repeat(32),
+        production_limits: None,
+    });
+    config.services = zdn::config::ServicePreset::NodeOnly.services();
+    config.write_new(&fixture.config).unwrap();
+    let before = fs::read(&fixture.config).unwrap();
+    for (owner, operation) in [
+        ("devnet", "render"),
+        ("devnet", "up"),
+        ("foundation", "render"),
+        ("foundation", "up"),
+    ] {
+        let mut command = fixture.command();
+        command
+            .env_clear()
+            .env("PATH", "")
+            .args([owner, operation, "--config"])
+            .arg(&fixture.config)
+            .arg("--state-dir")
+            .arg(&fixture.state);
+        if operation == "up" {
+            command.arg("--yes");
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success(), "{owner} {operation}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(if owner == "devnet" {
+                if cfg!(target_os = "linux") {
+                    "requires --external-public-directory"
+                } else {
+                    "external deployment execution requires Linux"
+                }
+            } else {
+                "ordinary chain execution is forbidden"
+            }),
+            "{owner} {operation}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !fixture.state.exists(),
+            "must not initialize deployment state"
+        );
+        assert_eq!(fs::read(&fixture.config).unwrap(), before);
+    }
+    for operation in ["check", "plan"] {
+        let report = fixture.ok(&[operation, "--config", fixture.config.to_str().unwrap()]);
+        assert_eq!(report["launchReady"], false);
+        assert_eq!(report["capabilities"]["chainSelection"], "external");
+        assert_eq!(
+            report["capabilities"]["deploymentPrerequisites"]["status"],
+            if cfg!(target_os = "linux") {
+                "unchecked"
+            } else {
+                "unsupported-platform"
+            }
+        );
+        assert_eq!(report["capabilities"]["liveReadinessChecked"], false);
+        assert_eq!(
+            report["capabilities"]["requestedServicesSupported"],
+            cfg!(target_os = "linux")
+        );
+        if operation == "plan" {
+            assert!(report.get("chainRequest").is_none());
+            assert_eq!(report["operationalSupport"], cfg!(target_os = "linux"));
+        }
     }
 }

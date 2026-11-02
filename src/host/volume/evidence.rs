@@ -16,7 +16,7 @@ use std::{
 use eyre::{ensure, Context, ContextCompat, Result};
 use serde::Deserialize;
 
-use crate::host::{HostInstallSpec, DATA_ROOT};
+use crate::host::{volume::VolumeSpec, DATA_ROOT};
 
 const MAX_METADATA_BYTES: usize = 16 * 1024 * 1024;
 
@@ -45,11 +45,11 @@ struct Device {
     tracing::instrument(skip_all, name = "host.volume.evidence.attached_device")
 )]
 pub fn attached_device(
-    spec: &HostInstallSpec,
+    spec: &impl VolumeSpec,
     lsblk: &[u8],
     producer_namespace: bool,
 ) -> Result<PathBuf> {
-    spec.validate()?;
+    spec.validate_volume()?;
     ensure!(
         lsblk.len() <= MAX_METADATA_BYTES,
         "block inventory exceeds its bound"
@@ -59,7 +59,7 @@ pub fn attached_device(
     let mut selected = None;
     select(
         &inventory.blockdevices,
-        &spec.volume_id.replace('-', ""),
+        &spec.volume_id().replace('-', ""),
         &mut selected,
     )?;
     let selected = selected.context("expected exactly one attached EBS serial")?;
@@ -171,11 +171,11 @@ pub fn chain_mounted(findmnt: &[u8], expected_device: &Path) -> Result<bool> {
     tracing::instrument(skip_all, name = "host.volume.evidence.verify_producer_mount")
 )]
 pub fn verify_producer_mount(
-    spec: &HostInstallSpec,
+    spec: &impl VolumeSpec,
     findmnt: &[u8],
     expected_device: &Path,
 ) -> Result<()> {
-    spec.validate()?;
+    spec.validate_volume()?;
     let mount = single_mount(findmnt)?;
     let target = format!("{}/producer", spec.node_root());
     // node_root() always starts at DATA_ROOT; retain the leading slash.

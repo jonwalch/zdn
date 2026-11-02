@@ -18,6 +18,7 @@ use std::{
 };
 use uuid::Uuid;
 
+pub mod external;
 pub mod update_controller;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,6 +29,10 @@ pub struct Deployment {
     pub foundation_runtime: Option<crate::foundation_runtime::FoundationRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster: Option<crate::devnet::ClusterRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<external::ExternalDeployment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_source: Option<external::source::SourcePreparation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<crate::update::RuntimeState>,
     pub spec: FoundationSpec,
@@ -46,6 +51,18 @@ pub struct Deployment {
 impl Deployment {
     /// Execution admission is separate from historical receipt validation and cleanup.
     pub fn require_native_execution(&self) -> Result<()> {
+        ensure!(
+            self.external_source.is_none() || self.external.is_some(),
+            "complete the saved external source build before deployment execution"
+        );
+        if let Some(external) = &self.external {
+            external.validate()?;
+            ensure!(
+                cfg!(target_os = "linux"),
+                "external execution requires Linux"
+            );
+            return Ok(());
+        }
         let message = "legacy execution is retired; destroy this deployment and recreate fresh with native runtime";
         if let Some(cluster) = &self.cluster {
             ensure!(
@@ -78,6 +95,9 @@ impl Deployment {
     pub fn render(&self) -> Result<crate::infra::PulumiProgram> {
         self.validate()?;
         let base = self.render_base()?;
+        if let Some(external) = &self.external {
+            return external.render(base, &self.spec, &self.team);
+        }
         match &self.cluster {
             Some(cluster) => cluster.render(base, &self.spec, &self.team),
             None => match &self.foundation_runtime {
@@ -160,6 +180,8 @@ impl Deployment {
             schema_version: 1,
             foundation_runtime: None,
             cluster: None,
+            external: None,
+            external_source: None,
             runtime: None,
             spec,
             team,
@@ -198,6 +220,26 @@ impl Deployment {
             self.owner_id.get_version_num() == 4,
             "invalid reservation owner"
         );
+        if let Some(source) = &self.external_source {
+            ensure!(
+                self.cluster.is_none()
+                    && self.runtime.is_none()
+                    && self.foundation_runtime.is_none()
+                    && self.team.deployment.is_some(),
+                "external source preparation cannot contain ordinary runtime authority"
+            );
+            source.validate(self)?;
+        }
+        if let Some(external) = &self.external {
+            ensure!(
+                self.cluster.is_none()
+                    && self.runtime.is_none()
+                    && self.foundation_runtime.is_none()
+                    && self.team.deployment.is_some(),
+                "external deployment cannot contain ordinary runtime authority"
+            );
+            external.validate()?;
+        }
         if let Some(outputs) = &self.outputs {
             self.validate_outputs(outputs)?;
         }
@@ -228,6 +270,14 @@ impl Deployment {
     )]
     pub fn validate_outputs(&self, outputs: &FoundationOutputs) -> Result<()> {
         outputs.validate_for(&self.spec)?;
+        if let Some(external) = &self.external {
+            crate::cluster_infra::validate_node_outputs(&outputs.nodes, &external.topology()?)?;
+            ensure!(
+                outputs.lightwallet.is_none(),
+                "external deployment contains ordinary lightwallet outputs"
+            );
+            return Ok(());
+        }
         if let Some(cluster) = &self.cluster {
             let topology = cluster.topology()?;
             crate::cluster_infra::validate_node_outputs(&outputs.nodes, &topology)?;
@@ -253,6 +303,21 @@ impl Deployment {
             );
         }
         Ok(())
+    }
+
+    pub fn has_nodes(&self) -> bool {
+        self.cluster.is_some() || self.external.is_some()
+    }
+
+    pub fn node_topology(&self) -> Result<crate::cluster_infra::ClusterTopology> {
+        if let Some(external) = &self.external {
+            external.topology()
+        } else {
+            self.cluster
+                .as_ref()
+                .context("missing node request")?
+                .topology()
+        }
     }
 }
 
@@ -305,6 +370,20 @@ pub trait FoundationBackend {
         Err(eyre::eyre!(
             "node runtime installation is not implemented by this backend"
         ))
+    }
+    #[cfg(target_os = "linux")]
+    fn verify_external_control(&mut self, _deployment: &Deployment, _node: &str) -> Result<()> {
+        eyre::bail!("external qualification is not implemented by this backend")
+    }
+    #[cfg(target_os = "linux")]
+    fn external_control(
+        &mut self,
+        _deployment: &Deployment,
+        _original: &crate::host::external::runtime::Manifest,
+        _request: &crate::host::external::runtime::qualification::Request,
+        _journal: &Path,
+    ) -> Result<Value> {
+        eyre::bail!("external qualification is not implemented by this backend")
     }
     fn ready(&mut self, deployment: &Deployment) -> Result<Value>;
     fn destroy(&mut self) -> Result<()>;
@@ -460,6 +539,10 @@ fn start_operation(
     action: OperationSpec<'_>,
 ) -> Result<OperationReceipt> {
     deployment.validate()?;
+    #[cfg(target_os = "linux")]
+    if action.delete_data.is_none() {
+        crate::foundation_live::external::update::require_settled(deployment, file.directory())?;
+    }
     ensure!(
         !deployment.runtime.as_ref().is_some_and(|r| r.pending()),
         "an image update is unresolved; resume that update before up or destroy"
@@ -495,13 +578,31 @@ fn start_operation(
         }
     }
     let inputs = OperationInput {
-        config_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&(
-            &deployment.spec,
-            &deployment.team,
-            deployment.owner_id,
-            action.delete_data,
-            &deployment.cluster,
-        ))?)),
+        config_sha256: if let Some(external) = &deployment.external {
+            hex::encode(Sha256::digest(serde_json::to_vec(&(
+                &deployment.spec,
+                &deployment.team,
+                deployment.owner_id,
+                action.delete_data,
+                external,
+            ))?))
+        } else if let Some(source) = &deployment.external_source {
+            hex::encode(Sha256::digest(serde_json::to_vec(&(
+                &deployment.spec,
+                &deployment.team,
+                deployment.owner_id,
+                action.delete_data,
+                source,
+            ))?))
+        } else {
+            hex::encode(Sha256::digest(serde_json::to_vec(&(
+                &deployment.spec,
+                &deployment.team,
+                deployment.owner_id,
+                action.delete_data,
+                &deployment.cluster,
+            ))?))
+        },
         source_manifest_sha256: None,
         archive_sha256: None,
     };
@@ -519,7 +620,7 @@ pub type OperationProgress<'a> = dyn FnMut(&OperationReceipt, Option<&str>) -> R
     feature = "profiling",
     tracing::instrument(skip_all, name = "foundation.phase")
 )]
-fn phase<T: Serialize>(
+pub(crate) fn phase<T: Serialize>(
     store: &StateStore,
     receipt: &mut OperationReceipt,
     name: &str,
@@ -609,6 +710,10 @@ pub fn apply_with_progress(
         !deployment.destroyed,
         "this foundation was destroyed; create a new network binding before provisioning again"
     );
+    ensure!(
+        deployment.external_source.is_none() || deployment.external.is_some(),
+        "complete the saved external source build before deployment execution"
+    );
     if let Some(set) = deployment
         .cluster
         .as_ref()
@@ -622,12 +727,14 @@ pub fn apply_with_progress(
         binding,
         deployment,
         OperationSpec {
-            kind: if deployment.cluster.is_some() {
+            kind: if deployment.external.is_some() {
+                "external-up"
+            } else if deployment.cluster.is_some() {
                 "devnet-up"
             } else {
                 "foundation-up"
             },
-            phases: if deployment.cluster.is_some() {
+            phases: if deployment.has_nodes() {
                 &[
                     "verify",
                     "reserve",
@@ -680,7 +787,7 @@ pub fn apply_with_progress(
         })?;
         deployment.outputs = Some(outputs);
         file.save(deployment)?;
-        if deployment.cluster.is_some() {
+        if deployment.has_nodes() {
             phase(store, &mut operation, "install", true, progress, || {
                 backend.deploy_runtime(deployment)
             })?;

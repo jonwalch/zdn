@@ -39,11 +39,14 @@ pub mod immutable_inputs;
 pub mod lightwallet;
 pub mod lightwallet_image;
 pub mod lightwallet_service;
+#[cfg(target_os = "linux")]
+pub mod native_peers;
 pub mod package;
 pub mod participant;
 #[cfg(target_os = "linux")]
 pub mod public_chain_adapter;
 pub mod releases;
 pub mod removal;
+pub mod rpc_limits;
 pub mod ssm;
 pub mod update;

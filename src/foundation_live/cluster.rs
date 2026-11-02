@@ -674,7 +674,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
         Ok(())
     }
 
-    fn remote(
+    pub(super) fn remote(
         &mut self,
         instance: &str,
         script: &str,
@@ -685,7 +685,10 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
         self.remote_with_budget(instance, script, journal, &mut budget)
     }
 
-    fn remote_batch(&mut self, commands: &[crate::ssm::CommandRequest]) -> Result<Vec<Value>> {
+    pub(super) fn remote_batch(
+        &mut self,
+        commands: &[crate::ssm::CommandRequest],
+    ) -> Result<Vec<Value>> {
         let mut progress = || {
             ensure!(
                 pulse(
@@ -770,7 +773,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
         deployment: &Deployment,
         delete_data: bool,
     ) -> Result<Vec<String>> {
-        if deployment.cluster.is_none() && deployment.foundation_runtime.is_none() {
+        if !deployment.has_nodes() && deployment.foundation_runtime.is_none() {
             return Ok(Vec::new());
         }
         let prefix = devnet::artifact_prefix(&deployment.team, &deployment.spec);
@@ -833,7 +836,7 @@ impl<A: AwsApi, R: PulumiRunner, T: Runtime> LiveBackend<'_, A, R, T> {
     feature = "profiling",
     tracing::instrument(skip_all, name = "foundation_live.cluster.installer_object")
 )]
-fn installer_object(
+pub(super) fn installer_object(
     deployment: &Deployment,
     stem: &str,
     sha256: &str,
@@ -859,6 +862,13 @@ pub fn selected_fetch_installer(
     object: &S3Object,
     timeout: u32,
 ) -> Result<String> {
+    if deployment.external.is_some() {
+        return crate::host::installer_bootstrap::render_selected(
+            crate::host::installer_bootstrap::PROTOCOL,
+            object,
+            timeout,
+        );
+    }
     let protocol = deployment
         .cluster
         .as_ref()

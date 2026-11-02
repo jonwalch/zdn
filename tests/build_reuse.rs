@@ -120,6 +120,7 @@ fn fixtures() -> (BuildInfrastructure, BuildContract) {
                 dockerfile: "Dockerfile".into(),
                 context: ".".into(),
                 target: "runtime".into(),
+                cargo_features: Vec::new(),
             },
             platform: "linux/amd64".into(),
             required_capabilities: ImageCapabilities::default(),
@@ -255,5 +256,44 @@ fn immutable_conflicts_and_lost_outcomes_are_bounded() {
         let api = Script::new(&contract, dir.path(), vec![step]);
         assert!(publish(&api, &infra, &contract, attempt, dir.path()).is_err());
         api.done();
+    }
+}
+
+#[test]
+fn feature_or_required_capability_changes_cannot_reuse_an_old_pointer() {
+    use zdn::image::ImageBuildRequirements;
+    let (infra, original) = fixtures();
+    let dir = tempfile::tempdir().unwrap();
+    let attempt = Uuid::new_v4();
+    let requirements =
+        ImageBuildRequirements::new(&["feature-a".into()], &["slh-dsa-b128s-v2".into()]).unwrap();
+    let mut featured = original.clone();
+    featured.require_external(&requirements).unwrap();
+    let writer = Script::new(&featured, dir.path(), vec![Step::Put(None)]);
+    publish(&writer, &infra, &featured, attempt, dir.path()).unwrap();
+    writer.done();
+    let bytes = writer.saved.borrow().clone();
+    let exact = Script::new(&featured, dir.path(), vec![Step::Get(bytes.clone(), true)]);
+    assert_eq!(
+        lookup(&exact, &infra, &featured, dir.path()).unwrap(),
+        Some(attempt)
+    );
+    exact.done();
+    let mut changed_features = original.clone();
+    changed_features
+        .require_external(&ImageBuildRequirements::new(&["feature-b".into()], &[]).unwrap())
+        .unwrap();
+    let mut changed_capabilities = original.clone();
+    changed_capabilities
+        .require_external(&ImageBuildRequirements::new(&requirements.cargo_features, &[]).unwrap())
+        .unwrap();
+    for contract in [original, changed_features, changed_capabilities] {
+        assert_ne!(
+            contract.fingerprint().unwrap(),
+            featured.fingerprint().unwrap()
+        );
+        let reader = Script::new(&contract, dir.path(), vec![Step::Get(bytes.clone(), true)]);
+        assert!(lookup(&reader, &infra, &contract, dir.path()).is_err());
+        reader.done();
     }
 }

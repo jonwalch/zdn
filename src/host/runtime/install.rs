@@ -399,6 +399,20 @@ pub fn units_for(manifest: &Manifest) -> Result<(String, Option<String>)> {
     let command = format!("/etc/zdn/runtime/{}/zdn __host-runtime --protocol {PROTOCOL} --manifest /etc/zdn/runtime/manifests/{}", manifest.runtime.helper.sha256, manifest.file_name()?);
     let producer =
         manifest.spec.role == "producer" && manifest.spec.block_interval_seconds.is_some();
+    Ok(units_for_command(
+        &command,
+        &manifest.spec.node_root(),
+        producer,
+    ))
+}
+
+/// Shared fixed supervisor policy. Callers validate all interpolated paths and
+/// construct the command from content-addressed trusted runtime data only.
+pub(in crate::host) fn units_for_command(
+    command: &str,
+    node_root: &str,
+    producer: bool,
+) -> (String, Option<String>) {
     let wants = if producer {
         "Wants=zdn-producer.service\n"
     } else {
@@ -460,8 +474,8 @@ ReadWritePaths={node}/producer
 [Install]
 WantedBy=multi-user.target
 "#,
-            node = manifest.spec.node_root()
+            node = node_root
         )
     });
-    Ok((node, producer))
+    (node, producer)
 }

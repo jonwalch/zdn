@@ -69,7 +69,8 @@ fn handshake_uses_verified_snapshot_fixed_argv_scrubbed_environment_and_fresh_re
     let directory = tempfile::tempdir().unwrap();
     let requests = directory.path().join("requests");
     let fixture = Fixture::new(&format!(
-        "with open({requests:?}, 'a') as f: f.write(request['requestId'] + '\\n')\nprint(json.dumps(response))"
+        "#{}\nwith open({requests:?}, 'a') as f: f.write(request['requestId'] + '\\n')\nprint(json.dumps(response))",
+        "padding across snapshot chunks".repeat(3000)
     ));
     let original = fs::read(&fixture.path).unwrap();
     let executable = fixture.verify();
@@ -147,6 +148,10 @@ fn invalid_executable_pins_and_non_regular_paths_refuse() {
         },
         TrustedExecutable {
             executable_bytes: fixture.selection.executable_bytes + 1,
+            ..fixture.selection.clone()
+        },
+        TrustedExecutable {
+            executable_bytes: fixture.selection.executable_bytes - 1,
             ..fixture.selection.clone()
         },
         TrustedExecutable {

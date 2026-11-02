@@ -11,11 +11,10 @@ use std::{
     io::{self, Read, Write},
     net::{IpAddr, SocketAddr},
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
-const MAX_BODY: usize = 8 * 1024 * 1024;
 const METHODS: &[&str] = &[
     "getchainrules",
     "inspectchainblock",
@@ -25,17 +24,19 @@ const METHODS: &[&str] = &[
     "getblocktemplate",
     "getblockheader",
     "getblock",
+    "getrawtransaction",
+    "gettxout",
     "z_gettreestate",
     "generate",
     "submitblock",
 ];
 
-struct RequestBytes(Vec<u8>);
+struct RequestBytes(Vec<u8>, usize);
 
 impl Write for RequestBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > MAX_BODY.saturating_sub(self.0.len()) {
-            return Err(io::Error::other("request exceeds 8 MiB"));
+        if bytes.len() > self.1.saturating_sub(self.0.len()) {
+            return Err(io::Error::other("request exceeds method body limit"));
         }
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -77,6 +78,39 @@ pub trait Clock {
     fn sleep(&self, duration: Duration);
 }
 
+/// Fence in-process RPC work with its caller's original cumulative deadline.
+/// Checking after a response also prevents late success from authorizing the
+/// next effect or a completion receipt. An uncertain mutation is never retried
+/// by this transport wrapper.
+pub struct DeadlineRpc<'a, R, C> {
+    pub rpc: &'a R,
+    pub clock: &'a C,
+    pub cancelled: &'a AtomicBool,
+    pub deadline: Duration,
+}
+
+impl<R, C: Clock> DeadlineRpc<'_, R, C> {
+    pub fn remaining(&self) -> Result<Duration, RpcError> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(RpcError::Protocol("node RPC action cancelled".into()));
+        }
+        self.deadline
+            .checked_sub(self.clock.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| RpcError::Protocol("node RPC action deadline reached".into()))
+    }
+}
+
+impl<R: NodeRpc, C: Clock + Sync> NodeRpc for DeadlineRpc<'_, R, C> {
+    fn call(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+        let result = self
+            .rpc
+            .call(method, params, timeout.min(self.remaining()?));
+        self.remaining()?;
+        result
+    }
+}
+
 pub struct SystemClock(Instant);
 
 impl Default for SystemClock {
@@ -102,16 +136,26 @@ pub struct HttpNodeRpc {
     url: String,
     authorization: String,
     next_id: AtomicU64,
+    body_class: crate::rpc_limits::BodyClass,
 }
 
 impl HttpNodeRpc {
     /// `endpoint` is a numeric loopback IP:port, not a URL. The cookie must be
     /// a private regular file. A node restart requires a new client/cookie read.
+    pub fn new(endpoint: &str, cookie: &Path) -> Result<Self> {
+        Self::with_body_class(endpoint, cookie, crate::rpc_limits::BodyClass::Default)
+    }
+
+    /// Only authenticated deployment contracts may select a larger finite class.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "chain.rpc.http.new")
     )]
-    pub fn new(endpoint: &str, cookie: &Path) -> Result<Self> {
+    pub fn with_body_class(
+        endpoint: &str,
+        cookie: &Path,
+        body_class: crate::rpc_limits::BodyClass,
+    ) -> Result<Self> {
         ensure!(endpoint.len() <= 64, "RPC endpoint exceeds 64 bytes");
         let endpoint: SocketAddr = endpoint
             .parse()
@@ -172,6 +216,7 @@ impl HttpNodeRpc {
             url: format!("http://{endpoint}/"),
             authorization: format!("Basic {}", STANDARD.encode(text)),
             next_id: AtomicU64::new(1),
+            body_class,
         })
     }
 }
@@ -196,14 +241,15 @@ impl NodeRpc for HttpNodeRpc {
             ));
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut request = RequestBytes(Vec::new());
+        let response_limit = self.body_class.response(method, &params);
+        let mut request = RequestBytes(Vec::new(), self.body_class.request(method));
         serde_json::to_writer(
             &mut request,
             &json!({
                 "jsonrpc": "2.0", "id": id, "method": method, "params": params
             }),
         )
-        .map_err(|_| RpcError::Protocol("cannot encode request within 8 MiB".into()))?;
+        .map_err(|_| RpcError::Protocol("cannot encode request within method body limit".into()))?;
         let response = self
             .agent
             .post(&self.url)
@@ -228,11 +274,13 @@ impl NodeRpc for HttpNodeRpc {
         let mut bytes = Vec::new();
         response
             .into_reader()
-            .take(MAX_BODY as u64 + 1)
+            .take(response_limit as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| RpcError::Transport("response failed or timed out".into()))?;
-        if bytes.len() > MAX_BODY {
-            return Err(RpcError::Protocol("response exceeds 8 MiB".into()));
+        if bytes.len() > response_limit {
+            return Err(RpcError::Protocol(
+                "response exceeds method body limit".into(),
+            ));
         }
         let mut value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| RpcError::Protocol("invalid JSON response".into()))?;

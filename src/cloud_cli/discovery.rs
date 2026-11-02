@@ -48,26 +48,45 @@ pub(super) fn list(args: StoreArgs, profile_name: String) -> Result<serde_json::
                 row["receiptState"] = json!("valid");
                 // Presence is not verified preparation or permission to resume.
                 // Partial/legacy build inputs also rule out foundation cleanup.
-                let source_build = deployment.cluster.is_none()
-                    && [
-                        "source-preparation.json",
-                        "source-build-inputs.json",
-                        "source-preparation",
-                        "source-snapshot",
-                        "build",
-                    ]
-                    .iter()
-                    .any(|name| {
-                        fs::symlink_metadata(
-                            store
-                                .root()
-                                .join("foundation")
-                                .join(id.to_string())
-                                .join(name),
-                        )
-                        .is_ok()
-                    });
-                row["requestKind"] = json!(if deployment.cluster.is_some() {
+                let external_source = deployment.external.is_none()
+                    && (deployment.external_source.is_some()
+                        || ["external-source-preparation.json", "external-source"]
+                            .iter()
+                            .any(|name| {
+                                fs::symlink_metadata(
+                                    store
+                                        .root()
+                                        .join("foundation")
+                                        .join(id.to_string())
+                                        .join(name),
+                                )
+                                .is_ok()
+                            }));
+                let source_build = external_source
+                    || (!deployment.has_nodes()
+                        && [
+                            "source-preparation.json",
+                            "source-build-inputs.json",
+                            "source-preparation",
+                            "source-snapshot",
+                            "build",
+                        ]
+                        .iter()
+                        .any(|name| {
+                            fs::symlink_metadata(
+                                store
+                                    .root()
+                                    .join("foundation")
+                                    .join(id.to_string())
+                                    .join(name),
+                            )
+                            .is_ok()
+                        }));
+                row["requestKind"] = json!(if deployment.external.is_some() {
+                    "external-nodes"
+                } else if external_source {
+                    "external-source-build"
+                } else if deployment.cluster.is_some() {
                     "nodes"
                 } else if source_build {
                     "source-build"
@@ -79,7 +98,7 @@ pub(super) fn list(args: StoreArgs, profile_name: String) -> Result<serde_json::
                 row["unresolvedOperationId"] = json!(deployment.unresolved_operation);
                 if source_build {
                     blockers.insert("source_build_preflight_required");
-                } else if deployment.cluster.is_none() {
+                } else if !deployment.has_nodes() {
                     blockers.insert("missing_node_request");
                 }
                 if deployment.spec.aws_profile != profile.aws_profile {
@@ -178,6 +197,7 @@ pub(super) fn list(args: StoreArgs, profile_name: String) -> Result<serde_json::
                     &deployment,
                     &profile_name,
                     store.root(),
+                    external_source,
                     blockers
                         .iter()
                         .any(|blocker| !matches!(*blocker, "destroyed" | "missing_node_request")),
@@ -223,6 +243,7 @@ fn cleanup_report(
     deployment: &Deployment,
     profile: &str,
     state: &Path,
+    external_source: bool,
     blocked: bool,
 ) -> Result<serde_json::Value> {
     let state = state
@@ -242,9 +263,9 @@ fn cleanup_report(
             && report
                 .retained_artifact_prefixes
                 .iter()
-                .all(|prefix| deployment.cluster.is_some() && prefix == &expected_prefix)
+                .all(|prefix| deployment.has_nodes() && prefix == &expected_prefix)
     });
-    let kind = if deployment.cluster.is_some() {
+    let kind = if deployment.has_nodes() || external_source {
         "devnet"
     } else {
         "foundation"

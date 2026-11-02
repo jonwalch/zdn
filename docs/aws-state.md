@@ -316,12 +316,27 @@ empty credentials file prevents static credentials with the same profile name
 from bypassing that process. The helper restores the original source config
 and credentials paths, requests a one-hour STS session, and returns it directly
 to the requesting SDK. Expiration permits SDK refresh during long operations.
-Each invocation requests a fresh session; zdn has no token cache. Missing,
-expired, or nearly expired credentials are rejected. Only non-secret instructions
-are saved. AWS API stdout and stderr are captured through bounded in-memory pipes,
+Each helper invocation requests a fresh session. Within one controller process,
+direct AWS CLI requests share an in-memory role session, authenticated against
+the recorded role with STS before use. Parallel requests share one refresh; a
+waiting request retains its own timeout. Before reuse, sessions with 60 seconds
+or less remaining are refreshed; monotonic reuse is capped at 59 minutes.
+Changing the expected role discards that client's cache. No tokens are cached
+on disk or passed in command arguments. Missing, expired, or nearly expired
+credentials are rejected. Only non-secret instructions are saved.
+AWS API stdout and stderr are captured through bounded in-memory pipes,
 including credential responses. Credential errors omit raw AWS diagnostics. AWS controls revocation
 and the lifetime of already-issued sessions.
 [AWS process credential provider](https://docs.aws.amazon.com/sdkref/latest/guide/feature-process-credentials.html).
+
+Credential reuse does not cache safety observations. The STS response that
+authenticates a newly exported session can satisfy that same identity request;
+later identity requests still call STS. After identity admission, independent
+backend ownership/settings and KMS reads share at most four workers per batch.
+Host/volume preflights and reservation/lease reads also run in bounded batches.
+Every response is still validated before effects, both selected-host preflights
+remain, and lease writes retain their exact conditional ETags. A failed read
+does not skip validation or authorize a mutation; started peers are joined.
 
 The SDK command parser requires absolute paths with ASCII letters, digits,
 spaces, dots, hyphens, underscores, or slashes for the zdn executable and its

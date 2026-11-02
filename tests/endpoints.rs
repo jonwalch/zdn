@@ -67,6 +67,45 @@ fn endpoint_roundtrip_contains_only_portable_non_secret_identity() {
 }
 
 #[test]
+fn external_endpoint_class_requires_explicit_version_and_live_service_binding() {
+    use zdn::{endpoints::EXTERNAL_API_VERSION, rpc_limits::BodyClass};
+    let ordinary = file(false, 1);
+    assert_eq!(ordinary.body_class(), BodyClass::Default);
+    assert!(serde_json::to_value(&ordinary)
+        .unwrap()
+        .get("external")
+        .is_none());
+    let mut value = serde_json::to_value(&ordinary).unwrap();
+    value["external"] = json!({
+        "requestSha256":"ab".repeat(32), "packageSha256":"bc".repeat(32),
+        "compiledSha256":"cd".repeat(32), "nativeInventorySha256":"de".repeat(32),
+        "hostManifestSha256":"ef".repeat(32), "serviceSha256":"01".repeat(32),
+        "bodyClass":"large-hex-v1"
+    });
+    assert!(EndpointFile::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+    value["apiVersion"] = EXTERNAL_API_VERSION.into();
+    let external = EndpointFile::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(external.body_class(), BodyClass::LargeHexV1);
+    let mut observation = json!({
+        "apiVersion":zdn::client_gateway::OBSERVATION_API_VERSION,
+        "deploymentId":ordinary.network_id, "nodeId":"node-1",
+        "consensusFingerprint":ordinary.consensus_fingerprint, "status":"ready"
+    });
+    ordinary.validate_gateway_observation(&observation).unwrap();
+    assert!(external.validate_gateway_observation(&observation).is_err());
+    observation["serviceSha256"] = "01".repeat(32).into();
+    external.validate_gateway_observation(&observation).unwrap();
+    observation["serviceSha256"] = "ff".repeat(32).into();
+    assert!(external.validate_gateway_observation(&observation).is_err());
+    for bad in ["default", "unlimited", "large-hex-v2"] {
+        value["external"]["bodyClass"] = bad.into();
+        assert!(EndpointFile::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+    value.as_object_mut().unwrap().remove("external");
+    assert!(EndpointFile::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+}
+
+#[test]
 fn strict_schema_rejects_commands_credentials_hosts_ports_and_unknown_fields() {
     let valid = serde_json::to_value(file(true, 3)).unwrap();
     for (pointer, key, value) in [

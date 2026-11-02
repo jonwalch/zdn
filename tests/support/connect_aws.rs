@@ -291,7 +291,14 @@ fn serve(
             File::create(root.join("health-started"))?;
             wait_for(&root.join("health-release"));
         }
-        let report = json!({"apiVersion":"zdn-client-rpc-observation/v1alpha1","deploymentId":endpoint["networkId"],"nodeId":"node-1","consensusFingerprint":if mode == "wrong-chain" {json!("0".repeat(64))} else {endpoint["consensusFingerprint"].clone()},"status":"ready"});
+        let mut report = json!({"apiVersion":"zdn-client-rpc-observation/v1alpha1","deploymentId":endpoint["networkId"],"nodeId":"node-1","consensusFingerprint":if mode == "wrong-chain" {json!("0".repeat(64))} else {endpoint["consensusFingerprint"].clone()},"status":"ready"});
+        if endpoint.get("external").is_some() {
+            report["serviceSha256"] = if mode == "wrong-external-service" {
+                json!("00".repeat(32))
+            } else {
+                endpoint["external"]["serviceSha256"].clone()
+            };
+        }
         return response(&mut stream, 200, None, report.to_string().as_bytes());
     }
     let mut body = vec![0; length];
@@ -661,6 +668,9 @@ fn serve(
     }
     if mode == "rpc-wide" {
         result = json!("x".repeat(70000));
+    }
+    if mode == "rpc-raw-large" {
+        result = json!("ab".repeat(4 * 1024 * 1024 + 32));
     }
     let mut answer = json!({"jsonrpc":"2.0","id":request["id"],"result":result});
     if mode == "rpc-wrong-id" {

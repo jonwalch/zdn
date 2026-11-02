@@ -535,6 +535,12 @@ fn local_evidence(
                 )?);
             }
         }
+        builds.extend(super::external_build_evidence(
+            api,
+            &deployment,
+            &directory,
+            reconcile,
+        )?);
         networks.insert(id.to_string(), serde_json::to_value(&deployment)?);
     }
     let participants = state

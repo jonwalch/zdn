@@ -1,5 +1,11 @@
 # Install ZDN and start your first network
 
+**Looking for the Linux TPQ experimental preview?** Use the separate
+[TPQ profile entry guide](tpq-preview.md). Its `tpq-linux-x86_64` toolset,
+public-package trust and source-to-image recipe are not the Preview 4
+Ironwood/ordinary-chain inputs below. Do not mix their wallets or chain files.
+This opt-in path does not change ordinary Preview 4 or Mac behavior.
+
 This walkthrough installs Preview 4 (experimental alpha), creates a disposable one-node network,
 optionally sends test coins, and removes the network and team resources.
 Use a new private work directory and keep the same shell and saved receipts

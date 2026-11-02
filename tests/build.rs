@@ -90,6 +90,7 @@ impl Fixture {
                 dockerfile: "docker/Dockerfile".into(),
                 context: ".".into(),
                 target: "runtime".into(),
+                cargo_features: Vec::new(),
             },
             platform: "linux/amd64".into(),
             required_capabilities: ImageCapabilities::default(),
@@ -499,6 +500,107 @@ fn contract_fingerprint_binds_recipe_source_and_revision_and_rejects_other_platf
         changed.recipe.target = target.into();
         assert!(changed.fingerprint().is_err());
     }
+}
+
+#[test]
+fn compiled_requirements_bind_features_capabilities_and_preserve_source_identity() {
+    use zdn::image::ImageBuildRequirements;
+    let f = Fixture::new();
+    let original = f.contract.clone();
+    let first =
+        ImageBuildRequirements::new(&["feature-a".into()], &["slh-dsa-b128s-v2".into()]).unwrap();
+    let mut contract = original.clone();
+    contract.require_external(&first).unwrap();
+    contract.verify_archive(&f.archive).unwrap();
+    assert_eq!(contract.source_sha256, original.source_sha256);
+    assert_eq!(contract.source_bytes, original.source_bytes);
+    assert_eq!(contract.revision, original.revision);
+    assert_eq!(contract.platform, original.platform);
+    assert_eq!(contract.recipe.dockerfile, original.recipe.dockerfile);
+    assert_eq!(contract.recipe.context, original.recipe.context);
+    assert_eq!(contract.api_version, zdn::build::FEATURE_API_VERSION);
+    assert_ne!(
+        contract.fingerprint().unwrap(),
+        original.fingerprint().unwrap()
+    );
+    let mut changed = original.clone();
+    changed
+        .require_external(
+            &ImageBuildRequirements::new(&["feature-b".into()], &["slh-dsa-b128s-v2".into()])
+                .unwrap(),
+        )
+        .unwrap();
+    assert_ne!(
+        contract.fingerprint().unwrap(),
+        changed.fingerprint().unwrap()
+    );
+    changed = original.clone();
+    changed
+        .require_external(&ImageBuildRequirements::new(&["feature-a".into()], &[]).unwrap())
+        .unwrap();
+    assert_ne!(
+        contract.fingerprint().unwrap(),
+        changed.fingerprint().unwrap()
+    );
+    let saved = contract.clone();
+    assert!(contract
+        .require_external(&ImageBuildRequirements::new(&["other".into()], &[]).unwrap())
+        .is_err());
+    assert_eq!(contract, saved);
+    contract.recipe.cargo_features.push("feature-b".into());
+    assert!(contract.validate().is_err());
+    contract = saved.clone();
+    contract.api_version = zdn::build::API_VERSION.into();
+    assert!(contract.validate().is_err());
+
+    let mut image: ImageRecord = serde_json::from_value(f.result["image"].clone()).unwrap();
+    assert!(saved.validate_image(&image).is_err());
+    image.api_version = image::FEATURE_API_VERSION.into();
+    image.capabilities = saved.required_capabilities.clone();
+    saved.validate_image(&image).unwrap();
+    image.provenance = ImageProvenance::Source {
+        revision: "b".repeat(40),
+        snapshot_sha256: saved.source_sha256.clone(),
+    };
+    assert!(saved.validate_image(&image).is_err());
+}
+
+#[test]
+fn build_config_features_are_optional_but_constructor_validates_and_pins_them() {
+    use zdn::{
+        config::Build,
+        source::{SnapshotMode, SnapshotReceipt},
+    };
+    let f = Fixture::new();
+    let receipt = SnapshotReceipt {
+        schema_version: 1,
+        source_root: f.root.path().into(),
+        mode: SnapshotMode::Worktree,
+        head: f.contract.revision.clone(),
+        branch: None,
+        dirty: false,
+        files: Vec::new(),
+        deleted_paths: Vec::new(),
+        omitted_untracked: Vec::new(),
+        excluded_paths: Vec::new(),
+        archive_sha256: f.contract.source_sha256.clone(),
+        archive_bytes: f.contract.source_bytes,
+    };
+    let mut build: Build = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(BuildContract::new(&receipt, &build).unwrap(), f.contract);
+    let old = serde_json::to_value(&build).unwrap();
+    assert!(old.get("cargoFeatures").is_none());
+    build.cargo_features = vec!["feature-a".into()];
+    let featured = BuildContract::new(&receipt, &build).unwrap();
+    assert_eq!(featured.recipe.cargo_features, build.cargo_features);
+    assert_ne!(
+        featured.fingerprint().unwrap(),
+        f.contract.fingerprint().unwrap()
+    );
+    build.cargo_features = vec!["z".into(), "a".into()];
+    assert!(BuildContract::new(&receipt, &build).is_err());
+    build.cargo_features = vec!["FEATURES=bad".into()];
+    assert!(BuildContract::new(&receipt, &build).is_err());
 }
 
 #[test]
@@ -1416,6 +1518,58 @@ fn resume_and_reuse_redownload_outputs_and_recheck_ecr_without_start() {
         || Ok(()),
     )
     .unwrap();
+    assert_eq!(api.starts.get(), 1);
+}
+
+#[test]
+fn external_build_revalidates_feature_bound_outputs_on_resume_and_reuse() {
+    let mut f = Fixture::new();
+    let requirements = image::ImageBuildRequirements::new(
+        &["feature-a".into()],
+        &[
+            "native-managed-identity-v1".into(),
+            "slh-dsa-b128s-v2".into(),
+        ],
+    )
+    .unwrap();
+    f.contract.require_external(&requirements).unwrap();
+    let mut config: Value = serde_json::from_slice(&f.config).unwrap();
+    config["config"]["Env"] = json!(["FEATURES=feature-a"]);
+    f.config = serde_json::to_vec(&config).unwrap();
+    let mut manifest: Value = serde_json::from_slice(&f.manifest).unwrap();
+    manifest["config"]["digest"] = format!("sha256:{}", hash(&f.config)).into();
+    manifest["config"]["size"] = f.config.len().into();
+    f.manifest = serde_json::to_vec(&manifest).unwrap();
+    let image = &mut f.result["image"];
+    image["apiVersion"] = image::FEATURE_API_VERSION.into();
+    image["image"] = format!("{}@sha256:{}", f.infra.repository_uri, hash(&f.manifest)).into();
+    image["configDigest"] = format!("sha256:{}", hash(&f.config)).into();
+    image["capabilities"] = serde_json::to_value(&f.contract.required_capabilities).unwrap();
+    f.result["contractSha256"] = hash(&serde_json::to_vec(&f.contract).unwrap()).into();
+    // Replace only the fixture's untouched initial attempt, before fake dispatch.
+    fs::remove_dir_all(f.directory()).unwrap();
+    f.prepare(&f.directory());
+    let mut api = FakeAws::new(&f);
+    let result = f.run(&api, &Clock::default()).unwrap();
+    assert_eq!(serde_json::to_value(result).unwrap(), f.result);
+    f.run(&api, &Clock::default()).unwrap();
+    let reused = f.root.path().join("external-reused");
+    f.prepare(&reused);
+    let run = |api: &FakeAws| {
+        build_job::run(
+            api,
+            &team(),
+            &f.contract,
+            &f.archive,
+            &reused,
+            &Clock::default(),
+            || Ok(()),
+        )
+    };
+    assert_eq!(serde_json::to_value(run(&api).unwrap()).unwrap(), f.result);
+    assert_eq!(api.starts.get(), 1);
+    api.registry_mismatch = true;
+    assert!(run(&api).unwrap_err().to_string().contains("ECR differs"));
     assert_eq!(api.starts.get(), 1);
 }
 

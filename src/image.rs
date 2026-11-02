@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const API_VERSION: &str = "zdn-zakura-image/v1alpha1";
+pub const FEATURE_API_VERSION: &str = "zdn-zakura-image/v1alpha2";
+pub const EXTERNAL_PUBLIC_SCHEMA: &str = "zdn-external-public/v1";
 pub const VALIDATION_API_VERSION: &str = "zdn-zakura-image-validation/v1alpha1";
 pub const NODE_BINARY: &str = "/usr/local/bin/zakurad";
 pub const ENV_ENTRYPOINT: &str = "/usr/bin/env";
@@ -58,6 +60,121 @@ pub struct ImageCapabilities {
     pub cookie_auth: bool,
     pub block_submission: bool,
     pub generate_rpc: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_requirements: Option<ImageBuildRequirements>,
+}
+
+/// A finite declaration vocabulary, not executable probes or runtime evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum RequiredCapability {
+    #[serde(rename = "native-managed-identity-v1")]
+    NativeManagedIdentityV1,
+    #[serde(rename = "slh-dsa-b128s-v2")]
+    SlhDsaB128sV2,
+}
+
+/// Exact public build requirements supplied by a validated compiled contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageBuildRequirements {
+    pub schema: String,
+    pub cargo_features: Vec<String>,
+    pub required_capabilities: Vec<RequiredCapability>,
+}
+
+impl ImageBuildRequirements {
+    pub fn new(cargo_features: &[String], required_capabilities: &[String]) -> Result<Self> {
+        validate_cargo_features(cargo_features)?;
+        ensure!(
+            required_capabilities.len() <= 2,
+            "too many required image capabilities"
+        );
+        let value = Self {
+            schema: EXTERNAL_PUBLIC_SCHEMA.into(),
+            cargo_features: cargo_features.to_vec(),
+            required_capabilities: required_capabilities
+                .iter()
+                .map(|capability| match capability.as_str() {
+                    "native-managed-identity-v1" => Ok(RequiredCapability::NativeManagedIdentityV1),
+                    "slh-dsa-b128s-v2" => Ok(RequiredCapability::SlhDsaB128sV2),
+                    _ => eyre::bail!("unsupported required image capability"),
+                })
+                .collect::<Result<_>>()?,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema == EXTERNAL_PUBLIC_SCHEMA,
+            "unsupported image requirements schema"
+        );
+        validate_cargo_features(&self.cargo_features)?;
+        ensure!(
+            self.required_capabilities.len() <= 2
+                && self
+                    .required_capabilities
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1]),
+            "required capabilities must be sorted and unique"
+        );
+        Ok(())
+    }
+
+    /// Use for supplied images as well as builds/reuse. Registry configuration
+    /// and pulled-image inspection must still be checked independently.
+    pub fn validate_image(&self, image: &ImageRecord) -> Result<()> {
+        self.validate()?;
+        image.validate_supported()?;
+        ensure!(
+            image.api_version == FEATURE_API_VERSION
+                && image.capabilities == ImageCapabilities::for_requirements(self.clone())?,
+            "image does not match the compiled build requirements"
+        );
+        Ok(())
+    }
+}
+
+/// Public, nonsecret Cargo feature names only: no dependency selectors, flags,
+/// whitespace, environment assignments or shell syntax. Never normalize input.
+pub fn validate_cargo_features(features: &[String]) -> Result<()> {
+    ensure!(
+        features.len() <= 32
+            && features.iter().map(String::len).sum::<usize>() + features.len().saturating_sub(1)
+                <= 256
+            && features.windows(2).all(|pair| pair[0] < pair[1])
+            && features.iter().all(|feature| {
+                !feature.is_empty()
+                    && feature.len() <= 64
+                    && feature.as_bytes()[0].is_ascii_alphanumeric()
+                    && feature
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            }),
+        "Cargo features must be bounded sorted unique public tokens"
+    );
+    Ok(())
+}
+
+impl ImageCapabilities {
+    pub fn for_requirements(requirements: ImageBuildRequirements) -> Result<Self> {
+        requirements.validate()?;
+        Ok(Self {
+            ruleset: EXTERNAL_PUBLIC_SCHEMA.into(),
+            build_requirements: Some(requirements),
+            ..Self::default()
+        })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let expected = match &self.build_requirements {
+            Some(requirements) => Self::for_requirements(requirements.clone())?,
+            None => Self::default(),
+        };
+        ensure!(*self == expected, "unsupported image capabilities");
+        Ok(())
+    }
 }
 
 impl Default for ImageCapabilities {
@@ -70,6 +187,7 @@ impl Default for ImageCapabilities {
             cookie_auth: true,
             block_submission: true,
             generate_rpc: true,
+            build_requirements: None,
         }
     }
 }
@@ -98,13 +216,36 @@ impl ImageRecord {
         Ok(record)
     }
 
+    pub fn from_json_for_requirements(
+        bytes: &[u8],
+        requirements: &ImageBuildRequirements,
+    ) -> Result<Self> {
+        ensure!(bytes.len() <= MAX_RECORD_BYTES, "image record is too large");
+        let record: Self = serde_json::from_slice(bytes).context("decode image record")?;
+        requirements.validate_image(&record)?;
+        Ok(record)
+    }
+
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "image.record.validate")
     )]
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.api_version == API_VERSION,
+            self.capabilities.build_requirements.is_none(),
+            "ordinary images cannot declare external build requirements"
+        );
+        self.validate_supported()
+    }
+
+    fn validate_supported(&self) -> Result<()> {
+        ensure!(
+            self.api_version
+                == if self.capabilities.build_requirements.is_some() {
+                    FEATURE_API_VERSION
+                } else {
+                    API_VERSION
+                },
             "unsupported image record version"
         );
         validate_reference(&self.image)?;
@@ -121,10 +262,7 @@ impl ImageRecord {
             self.environment_launcher == ENV_ENTRYPOINT,
             "image requires the /usr/bin/env clean-environment launcher"
         );
-        ensure!(
-            self.capabilities == ImageCapabilities::default(),
-            "image must declare the exact supported runtime and RPC capabilities"
-        );
+        self.capabilities.validate()?;
         match &self.provenance {
             ImageProvenance::Source {
                 revision,
@@ -154,7 +292,9 @@ impl ImageRecord {
     }
 
     pub fn manifest_digest(&self) -> Result<&str> {
-        self.validate()?;
+        // Structural read only, including cleanup/inspection of explicit external
+        // records. Operational admission still requires an expected contract.
+        self.validate_supported()?;
         Ok(self
             .image
             .rsplit_once('@')
@@ -258,13 +398,29 @@ struct Descriptor {
 )]
 pub fn validate_manifest_bytes(record: &ImageRecord, bytes: &[u8]) -> Result<VerifiedManifest> {
     record.validate()?;
+    validate_manifest_inner(record, bytes)
+}
+
+pub fn validate_manifest_bytes_for_requirements(
+    record: &ImageRecord,
+    requirements: &ImageBuildRequirements,
+    bytes: &[u8],
+) -> Result<VerifiedManifest> {
+    requirements.validate_image(record)?;
+    validate_manifest_inner(record, bytes)
+}
+
+fn validate_manifest_inner(record: &ImageRecord, bytes: &[u8]) -> Result<VerifiedManifest> {
     ensure!(
         !bytes.is_empty() && bytes.len() <= MAX_MANIFEST_BYTES,
         "invalid image manifest size"
     );
     let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
     ensure!(
-        digest == record.manifest_digest()?,
+        record
+            .image
+            .rsplit_once('@')
+            .is_some_and(|(_, pinned)| digest == pinned),
         "image manifest SHA-256 does not match the pinned child digest"
     );
     let manifest: RegistryManifest =
@@ -353,6 +509,24 @@ pub fn validate_config_bytes(
     bytes: &[u8],
 ) -> Result<()> {
     record.validate()?;
+    validate_config_inner(record, verified, bytes)
+}
+
+pub fn validate_config_bytes_for_requirements(
+    record: &ImageRecord,
+    requirements: &ImageBuildRequirements,
+    verified: &VerifiedManifest,
+    bytes: &[u8],
+) -> Result<()> {
+    requirements.validate_image(record)?;
+    validate_config_inner(record, verified, bytes)
+}
+
+fn validate_config_inner(
+    record: &ImageRecord,
+    verified: &VerifiedManifest,
+    bytes: &[u8],
+) -> Result<()> {
     ensure!(
         verified.record_sha256 == record_sha256(record)?,
         "manifest verification belongs to a different image record"
@@ -380,7 +554,11 @@ pub fn validate_config_bytes(
     for digest in config.rootfs.diff_ids {
         validate_digest(&digest)?;
     }
-    validate_runtime_defaults(&config.config)
+    validate_runtime_defaults(
+        &config.config,
+        record.capabilities.build_requirements.is_some(),
+    )?;
+    validate_feature_binding(record, &config.config)
 }
 
 #[derive(Deserialize)]
@@ -424,6 +602,24 @@ pub fn validate_docker_inspect(
     bytes: &[u8],
 ) -> Result<ImageInspectionReport> {
     record.validate()?;
+    validate_inspect_inner(record, verified, bytes)
+}
+
+pub fn validate_docker_inspect_for_requirements(
+    record: &ImageRecord,
+    requirements: &ImageBuildRequirements,
+    verified: &VerifiedManifest,
+    bytes: &[u8],
+) -> Result<ImageInspectionReport> {
+    requirements.validate_image(record)?;
+    validate_inspect_inner(record, verified, bytes)
+}
+
+fn validate_inspect_inner(
+    record: &ImageRecord,
+    verified: &VerifiedManifest,
+    bytes: &[u8],
+) -> Result<ImageInspectionReport> {
     ensure!(
         verified.record_sha256 == record_sha256(record)?,
         "manifest verification belongs to a different image record"
@@ -452,7 +648,11 @@ pub fn validate_docker_inspect(
         image.os == "linux" && image.architecture == "amd64" && image.variant.is_empty(),
         "pulled image must be Linux amd64 without a variant"
     );
-    validate_runtime_defaults(&image.config)?;
+    validate_runtime_defaults(
+        &image.config,
+        record.capabilities.build_requirements.is_some(),
+    )?;
+    validate_feature_binding(record, &image.config)?;
     Ok(ImageInspectionReport {
         api_version: VALIDATION_API_VERSION.into(),
         image: record.image.clone(),
@@ -473,8 +673,8 @@ pub fn validate_docker_inspect(
     feature = "profiling",
     tracing::instrument(skip_all, name = "image.validate_runtime_defaults")
 )]
-fn validate_runtime_defaults(config: &DockerConfig) -> Result<()> {
-    validate_environment(config.env.as_deref().unwrap_or_default())?;
+fn validate_runtime_defaults(config: &DockerConfig, explicit_features: bool) -> Result<()> {
+    validate_environment(config.env.as_deref().unwrap_or_default(), explicit_features)?;
     ensure!(
         config.volumes.as_ref().is_none_or(BTreeMap::is_empty),
         "image-declared volumes are not supported"
@@ -508,7 +708,7 @@ fn validate_runtime_defaults(config: &DockerConfig) -> Result<()> {
     feature = "profiling",
     tracing::instrument(skip_all, name = "image.validate_environment")
 )]
-fn validate_environment(env: &[String]) -> Result<()> {
+fn validate_environment(env: &[String], explicit_features: bool) -> Result<()> {
     ensure!(env.len() <= 16, "too many image environment variables");
     let mut names = BTreeSet::new();
     for item in env {
@@ -526,20 +726,37 @@ fn validate_environment(env: &[String]) -> Result<()> {
             "USER" => value == "zebra",
             "UID" | "GID" => value == "10001",
             "FEATURES" => {
-                !value.is_empty()
-                    && value.len() <= 256
-                    && value.split(',').all(|feature| {
-                        !feature.is_empty()
-                            && feature
-                                .bytes()
-                                .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
-                    })
+                (explicit_features && value.is_empty())
+                    || (!value.is_empty()
+                        && value.len() <= 256
+                        && value.split(',').all(|feature| {
+                            !feature.is_empty()
+                                && feature
+                                    .bytes()
+                                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+                        }))
             }
             _ => false,
         };
         ensure!(
             supported,
             "image contains an unsupported environment variable or value"
+        );
+    }
+    Ok(())
+}
+
+fn validate_feature_binding(record: &ImageRecord, config: &DockerConfig) -> Result<()> {
+    if let Some(requirements) = &record.capabilities.build_requirements {
+        let observed = config
+            .env
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find_map(|assignment| assignment.strip_prefix("FEATURES="));
+        ensure!(
+            observed == Some(requirements.cargo_features.join(",").as_str()),
+            "image FEATURES does not match the compiled build requirements"
         );
     }
     Ok(())

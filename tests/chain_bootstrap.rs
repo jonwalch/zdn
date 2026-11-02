@@ -112,6 +112,7 @@ struct Sim {
     submissions: VecDeque<Submission>,
     pending: Vec<(u64, usize, String)>,
     hash_error: Option<RpcError>,
+    above_tip_code: i64,
     hash_override: BTreeMap<i64, Result<Value, RpcError>>,
     hash_reads: u64,
     commit_after_hash_read: Option<(u64, Vec<(usize, String)>)>,
@@ -158,6 +159,7 @@ impl FakeNode {
                 submissions: VecDeque::new(),
                 pending: Vec::new(),
                 hash_error: None,
+                above_tip_code: -32602,
                 hash_override: BTreeMap::new(),
                 hash_reads: 0,
                 commit_after_hash_read: None,
@@ -253,7 +255,7 @@ impl NodeRpc for FakeNode {
                     };
                     if height > tip {
                         return Err(remote(
-                            -32602,
+                            sim.above_tip_code,
                             "Provided index is greater than the current tip",
                         ));
                     }
@@ -390,6 +392,112 @@ fn full_bundle_is_decoded_before_mutation_and_success_is_actual_checkpoint_histo
     assert_eq!(second.already_present_blocks, 3);
     assert_eq!(second.submission_attempts, 0);
     assert_eq!(node.submissions(), 3);
+}
+
+#[test]
+fn action_fence_stops_bootstrap_effects_and_late_completion_without_retrying() {
+    use std::sync::atomic::AtomicBool;
+    use zdn::chain::rpc::DeadlineRpc;
+
+    struct Interrupted<'a> {
+        node: &'a FakeNode,
+        cancel: &'a AtomicBool,
+        stage: &'a str,
+        expire: bool,
+    }
+    impl NodeRpc for Interrupted<'_> {
+        fn call(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+            let result = self.node.call(method, params, timeout);
+            let stop = match self.stage {
+                "inspection" => method == "inspectchainblock",
+                "reconciliation" => method == "getblockhash" && self.node.submissions() > 0,
+                "completion" => {
+                    method == "getchainrules" && self.node.state.lock().unwrap().rule_reads == 2
+                }
+                _ => false,
+            };
+            if stop {
+                if self.expire {
+                    self.node.clock.sleep(Duration::from_millis(50));
+                } else {
+                    self.cancel.store(true, Ordering::SeqCst);
+                }
+            }
+            result
+        }
+    }
+
+    for stage in ["inspection", "reconciliation", "completion", "success"] {
+        for expire in [false, true] {
+            let fixture = Fixture::new(3);
+            let clock = FakeClock::default();
+            clock.sleep(Duration::from_millis(200));
+            let node = fixture.node(&clock);
+            // An uncertain successful mutation must be reconciled on a later
+            // invocation, not dispatched again after cancellation/expiry.
+            if stage == "reconciliation" {
+                node.state
+                    .lock()
+                    .unwrap()
+                    .submissions
+                    .push_back(Submission::Commit(Err(RpcError::Transport(
+                        "response lost".into(),
+                    ))));
+            }
+            let cancel = AtomicBool::new(false);
+            let interrupted = Interrupted {
+                node: &node,
+                cancel: &cancel,
+                stage,
+                expire,
+            };
+            let rpc = DeadlineRpc {
+                rpc: &interrupted,
+                clock: &clock,
+                cancelled: &cancel,
+                deadline: Duration::from_millis(250),
+            };
+            let result =
+                load_seed_history(&fixture.manifest, &fixture.bundle, &rpc, &clock, &options());
+            let expected_blocks = match stage {
+                "inspection" => 0,
+                "reconciliation" => 1,
+                _ => 3,
+            };
+            assert_eq!(
+                node.state.lock().unwrap().chain.len(),
+                expected_blocks,
+                "{stage}"
+            );
+            if stage == "success" {
+                assert!(result.unwrap().seed_history_present);
+            } else {
+                assert!(result.is_err(), "late bootstrap completion at {stage}");
+                assert!(rpc.remaining().is_err());
+            }
+            assert!(node
+                .state
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|(_, _, timeout)| *timeout <= Duration::from_millis(50)));
+            if stage == "reconciliation" {
+                let report = load_seed_history(
+                    &fixture.manifest,
+                    &fixture.bundle,
+                    &node,
+                    &clock,
+                    &options(),
+                )
+                .unwrap();
+                assert_eq!(report.already_present_blocks, 1);
+                assert_eq!(report.submitted_blocks, 2);
+                assert_eq!(node.state.lock().unwrap().chain.len(), 3);
+                assert_eq!(node.submissions(), 3);
+            }
+        }
+    }
 }
 
 #[test]
@@ -570,9 +678,32 @@ fn wrong_existing_hash_or_missing_prefix_or_unknown_tip_never_submits() {
 }
 
 #[test]
+fn bootstrap_accepts_exact_compatibility_and_standard_above_tip_errors() {
+    for code in [-1, -32602] {
+        let fixture = Fixture::new(3);
+        let clock = FakeClock::default();
+        let node = fixture.node(&clock);
+        node.state.lock().unwrap().above_tip_code = code;
+        let report = load_seed_history(
+            &fixture.manifest,
+            &fixture.bundle,
+            &node,
+            &clock,
+            &options(),
+        )
+        .unwrap();
+        assert_eq!(report.seed_tip_hash, hash(2));
+        assert_eq!(report.submitted_blocks, 3);
+        assert!(report.seed_history_present);
+    }
+}
+
+#[test]
 fn only_precise_known_missing_errors_can_authorize_loading() {
     for rpc_error in [
         remote(-1, "database unavailable"),
+        remote(-1, "Provided index is greater than the current tip "),
+        remote(-20, "Provided index is greater than the current tip"),
         remote(-8, "bad parameter"),
         remote(-32602, "Index conversion failed"),
         remote(-32602, "Provided index is not valid"),
@@ -1076,6 +1207,7 @@ fn deadline_in_preflight_prevents_submission_and_starts_at_invocation() {
 fn impossible_missing_tip_errors_never_authorize_an_empty_chain() {
     for error in [
         remote(-8, "Block not found"),
+        remote(-1, "Provided index is greater than the current tip"),
         remote(-32602, "Provided index is greater than the current tip"),
     ] {
         let fixture = Fixture::new(1);

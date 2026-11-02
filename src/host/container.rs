@@ -17,6 +17,42 @@ use super::{
 };
 use crate::{image, infra::HostObservation};
 
+/// Closed launch contract shared by ordinary and explicitly selected external
+/// runtimes. It contains no consensus placeholder or RPC authority.
+pub trait LaunchSpec: super::volume::VolumeSpec {
+    fn validate_launch(&self) -> Result<()>;
+    fn validate_image(&self, image: &str) -> Result<()>;
+    fn deployment_id(&self) -> uuid::Uuid;
+    fn node_id(&self) -> &str;
+    fn memory_bytes(&self) -> u64;
+    fn cpu_millis(&self) -> u32;
+    fn host_reserve_bytes(&self) -> u64;
+}
+
+impl LaunchSpec for HostInstallSpec {
+    fn validate_launch(&self) -> Result<()> {
+        self.validate()
+    }
+    fn validate_image(&self, image: &str) -> Result<()> {
+        self.validate_image(image)
+    }
+    fn deployment_id(&self) -> uuid::Uuid {
+        self.deployment_id
+    }
+    fn node_id(&self) -> &str {
+        &self.node_id
+    }
+    fn memory_bytes(&self) -> u64 {
+        self.memory_bytes
+    }
+    fn cpu_millis(&self) -> u32 {
+        self.cpu_millis
+    }
+    fn host_reserve_bytes(&self) -> u64 {
+        self.host_reserve_bytes
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveLimits {
@@ -30,10 +66,10 @@ pub struct EffectiveLimits {
 
 /// Node-specific reserves, not foundation/test-service allocation rules.
 pub fn effective_limits(
-    spec: &HostInstallSpec,
+    spec: &impl LaunchSpec,
     observation: &HostObservation,
 ) -> Result<EffectiveLimits> {
-    spec.validate()?;
+    spec.validate_launch()?;
     let memory = observation
         .ancestor_memory_limits_bytes
         .iter()
@@ -50,13 +86,13 @@ pub fn effective_limits(
         .copied()
         .fold(cpu, u32::min);
     let node_memory = memory
-        .checked_sub(spec.host_reserve_bytes)
+        .checked_sub(spec.host_reserve_bytes())
         .context("effective memory cannot fit host reserve")?
-        .min(spec.memory_bytes);
+        .min(spec.memory_bytes());
     let node_cpu = cpu
         .checked_sub(250)
         .context("effective CPU cannot fit host reserve")?
-        .min(spec.cpu_millis);
+        .min(spec.cpu_millis());
     ensure!(
         node_memory >= 1024 * 1024 * 1024 && node_cpu >= 250,
         "effective host resources do not fit node and reserved host budget"
@@ -64,18 +100,18 @@ pub fn effective_limits(
     Ok(EffectiveLimits {
         effective_memory_bytes: memory,
         visible_cpu_millis: cpu,
-        host_reserve_bytes: spec.host_reserve_bytes,
+        host_reserve_bytes: spec.host_reserve_bytes(),
         host_reserve_cpu_millis: 250,
         node_memory_bytes: node_memory,
         node_cpu_millis: node_cpu,
     })
 }
 
-fn name(spec: &HostInstallSpec) -> String {
-    format!("zdn-{}-{}", spec.deployment_id, spec.node_id)
+fn name(spec: &impl LaunchSpec) -> String {
+    format!("zdn-{}-{}", spec.deployment_id(), spec.node_id())
 }
 
-fn node_command(spec: &HostInstallSpec) -> Vec<String> {
+fn node_command(spec: &impl LaunchSpec) -> Vec<String> {
     vec![
         "-i".into(),
         format!("PATH={}", image::LAUNCH_PATH),
@@ -92,7 +128,7 @@ fn node_command(spec: &HostInstallSpec) -> Vec<String> {
 /// `image` is separately authenticated revision data; never substitute it into
 /// `spec`, whose digest remains the original container ownership label.
 pub fn arguments(
-    spec: &HostInstallSpec,
+    spec: &impl LaunchSpec,
     image: &str,
     observation: &HostObservation,
 ) -> Result<Vec<String>> {
@@ -158,7 +194,7 @@ pub fn arguments(
     Ok(args)
 }
 
-fn record(spec: &HostInstallSpec, image: &str, raw: &[u8]) -> Result<Value> {
+fn record(spec: &impl LaunchSpec, image: &str, raw: &[u8]) -> Result<Value> {
     let records: Vec<Value> =
         serde_json::from_slice(raw).map_err(|_| eyre::eyre!("invalid container inspection"))?;
     ensure!(records.len() == 1, "expected exactly one node container");
@@ -179,7 +215,7 @@ fn record(spec: &HostInstallSpec, image: &str, raw: &[u8]) -> Result<Value> {
     tracing::instrument(skip_all, name = "host.container.running_limits")
 )]
 pub fn running_limits(
-    spec: &HostInstallSpec,
+    spec: &impl LaunchSpec,
     image: &str,
     observation: &HostObservation,
     docker: &Path,
@@ -279,13 +315,13 @@ pub fn running_limits(
     tracing::instrument(skip_all, name = "host.container.cleanup")
 )]
 pub fn cleanup(
-    spec: &HostInstallSpec,
+    spec: &impl LaunchSpec,
     image: &str,
     docker: &Path,
     executor: &mut Executor,
     cancelled: &AtomicBool,
 ) -> Result<()> {
-    spec.validate()?;
+    spec.validate_launch()?;
     spec.validate_image(image)?;
     let mut command = |args: &[&str], timeout, allowed: &[i32]| {
         let args: Vec<_> = args.iter().map(|s| (*s).into()).collect();

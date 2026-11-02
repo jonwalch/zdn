@@ -545,6 +545,10 @@ fn cleanup_still_rejects_wrong_backend_ownership_identity_and_key() {
             verify_backend_for_cleanup(&api, &selection(), &team).is_err(),
             "{fault}"
         );
+        assert!(
+            verify_backend(&api, &selection(), &team).is_err(),
+            "{fault}"
+        );
         assert!(api.mutations().is_empty(), "{fault}");
     }
     let api = FakeAws::new(PathBuf::new());
@@ -552,6 +556,218 @@ fn cleanup_still_rejects_wrong_backend_ownership_identity_and_key() {
     selected.account_id = "999999999999".into();
     assert!(verify_backend_for_cleanup(&api, &selected, &fixture_team()).is_err());
     assert!(api.cloud.lock().unwrap().calls.is_empty());
+}
+
+#[test]
+fn backend_cross_service_batch_admits_identity_and_validates_every_ordered_result() {
+    use std::cell::Cell;
+
+    // Deliberately not Sync: the public boundary must support serial fixtures.
+    struct BackendBatch<'a> {
+        api: &'a FakeAws,
+        batches: Cell<usize>,
+        fault: &'a str,
+        index: usize,
+        other: usize,
+    }
+    impl AwsApi for BackendBatch<'_> {
+        fn call(&self, service: &str, op: &str, input: Value, extra: &[String]) -> Result<Value> {
+            assert_eq!((service, op), ("sts", "get-caller-identity"));
+            self.api.call(service, op, input, extra)
+        }
+
+        fn batch_call_cross_service(
+            &self,
+            calls: &[AwsServiceCall<'_>],
+        ) -> Result<Vec<Result<Value>>> {
+            assert_eq!(self.batches.replace(self.batches.get() + 1), 0);
+            assert_eq!(self.api.count("get-caller-identity"), 1);
+            assert_eq!(self.api.cloud.lock().unwrap().calls.len(), 1);
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|r| (r.service, r.call.operation))
+                    .collect::<Vec<_>>(),
+                [
+                    ("s3api", "head-bucket"),
+                    ("s3api", "get-bucket-location"),
+                    ("s3api", "get-bucket-tagging"),
+                    ("s3api", "get-bucket-versioning"),
+                    ("s3api", "get-public-access-block"),
+                    ("s3api", "get-bucket-ownership-controls"),
+                    ("s3api", "get-bucket-encryption"),
+                    ("s3api", "get-bucket-policy"),
+                    ("kms", "describe-key"),
+                    ("kms", "list-resource-tags"),
+                    ("kms", "get-key-rotation-status"),
+                ]
+            );
+            let mut results: Vec<_> = calls
+                .iter()
+                .map(|request| {
+                    let call = &request.call;
+                    assert!(call.extra_args.is_empty());
+                    assert_eq!(
+                        call.input,
+                        if request.service == "s3api" {
+                            json!({"Bucket":"zdn-test-backend","ExpectedBucketOwner":ACCOUNT})
+                        } else {
+                            json!({"KeyId":KEY})
+                        }
+                    );
+                    self.api.call(
+                        request.service,
+                        call.operation,
+                        call.input.clone(),
+                        &call.extra_args,
+                    )
+                })
+                .collect();
+            match self.fault {
+                "none" => (),
+                "missing" => {
+                    let _ = results.remove(self.index);
+                }
+                "extra" => results.push(Ok(json!({}))),
+                "swap" => results.swap(self.index, self.other),
+                "error" => results[self.index] = Err(error("AccessDenied")),
+                "empty" => results[self.index] = Ok(json!({})),
+                "truncated" => results[9].as_mut().unwrap()["Truncated"] = json!(true),
+                "key-arn" | "key-manager" | "key-usage" | "key-spec" | "key-state" => {
+                    let field = match self.fault {
+                        "key-arn" => "Arn",
+                        "key-manager" => "KeyManager",
+                        "key-usage" => "KeyUsage",
+                        "key-spec" => "KeySpec",
+                        "key-state" => "KeyState",
+                        _ => unreachable!(),
+                    };
+                    results[8].as_mut().unwrap()["KeyMetadata"][field] = json!("wrong");
+                }
+                _ => unreachable!(),
+            }
+            Ok(results)
+        }
+    }
+    let dir = TempDir::new().unwrap();
+    let api = FakeAws::new(dir.path().join("recovery.json"));
+    let team = bootstrap(&api, &selection(), &request(), &api.receipt, None).unwrap();
+    let check = |fault, index, other| {
+        api.cloud.lock().unwrap().calls.clear();
+        let adapter = BackendBatch {
+            api: &api,
+            batches: Cell::new(0),
+            fault,
+            index,
+            other,
+        };
+        let result = verify_backend(&adapter, &selection(), &team);
+        assert_eq!(
+            result.is_ok(),
+            fault == "none",
+            "{fault} {index} {other}: {result:?}"
+        );
+        assert_eq!(adapter.batches.get(), 1);
+        assert!(api.mutations().is_empty());
+    };
+    check("none", 0, 0);
+    check("extra", 0, 0);
+    for index in 0..11 {
+        check("missing", index, 0);
+        check("error", index, 0);
+        if index > 0 {
+            check("empty", index, 0);
+        }
+        for other in index + 1..11 {
+            check("swap", index, other);
+        }
+    }
+    for fault in [
+        "truncated",
+        "key-arn",
+        "key-manager",
+        "key-usage",
+        "key-spec",
+        "key-state",
+    ] {
+        check(fault, 0, 0);
+    }
+    // Admission failures must never dispatch the cross-service batch.
+    for fault in ["account", "selection", "team", "sts"] {
+        api.cloud.lock().unwrap().calls.clear();
+        let adapter = BackendBatch {
+            api: &api,
+            batches: Cell::new(0),
+            fault: "none",
+            index: 0,
+            other: 0,
+        };
+        let mut selected = selection();
+        let mut invalid_team = team.clone();
+        match fault {
+            "account" => api.cloud.lock().unwrap().account = Some("999999999999".into()),
+            "selection" => selected.region = "us-west-2".into(),
+            "team" => invalid_team.state.kms_key_arn = "foreign".into(),
+            "sts" => api.cloud.lock().unwrap().fail_sts = true,
+            _ => unreachable!(),
+        }
+        assert!(
+            verify_backend(&adapter, &selected, &invalid_team).is_err(),
+            "{fault}"
+        );
+        assert_eq!(adapter.batches.get(), 0, "{fault}");
+        let mut cloud = api.cloud.lock().unwrap();
+        cloud.account = None;
+        cloud.fail_sts = false;
+    }
+}
+
+#[test]
+fn cross_service_batch_serial_default_preserves_arguments_order_and_stops_after_failure() {
+    use std::cell::RefCell;
+    struct Serial(RefCell<Vec<String>>);
+    impl AwsApi for Serial {
+        fn call(&self, service: &str, op: &str, input: Value, extra: &[String]) -> Result<Value> {
+            let index = self.0.borrow().len();
+            assert_eq!(op, "fixture");
+            assert_eq!(input, json!({"index":index}));
+            assert_eq!(extra, &[format!("argument {index}")]);
+            self.0.borrow_mut().push(service.into());
+            if index == 2 {
+                bail!("fixture failure");
+            }
+            Ok(input)
+        }
+    }
+    let api = Serial(RefCell::new(Vec::new()));
+    assert!(api.batch_call_cross_service(&[]).unwrap().is_empty());
+    let calls: Vec<_> = ["s3api", "kms", "s3api", "kms"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, service)| AwsServiceCall {
+            service,
+            call: AwsCall {
+                operation: "fixture",
+                input: json!({"index":index}),
+                extra_args: vec![format!("argument {index}")],
+            },
+        })
+        .collect();
+    let results = api.batch_call_cross_service(&calls).unwrap();
+    assert_eq!(results.len(), calls.len());
+    assert_eq!(results[0].as_ref().unwrap(), &json!({"index":0}));
+    assert_eq!(results[1].as_ref().unwrap(), &json!({"index":1}));
+    assert!(results[2]
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("fixture failure"));
+    assert!(results[3]
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("not dispatched"));
+    assert_eq!(*api.0.borrow(), ["s3api", "kms", "s3api"]);
 }
 
 #[test]
@@ -982,6 +1198,10 @@ fn aws_batch_process_fixture() {
         std::env::var("ZDN_BATCH_ARGUMENT").unwrap(),
         format!("index {index}")
     );
+    assert_eq!(
+        std::env::var("ZDN_BATCH_SERVICE").unwrap(),
+        request["service"].as_str().unwrap()
+    );
     let count = request["count"].as_u64().unwrap();
     let group_size = (count - index / 4 * 4).min(4);
     let wait_for_refill = index == 0 && count > 4 && request["fail"] != true;
@@ -1055,6 +1275,8 @@ while [ "$#" -gt 0 ]; do
     elif [ "$1" = '--fixture-argument' ]; then
         export ZDN_BATCH_ARGUMENT="$2"
         shift
+    elif [ "$1" = 'ec2' ] || [ "$1" = 's3api' ] || [ "$1" = 'kms' ]; then
+        export ZDN_BATCH_SERVICE="$1"
     fi
     shift
 done
@@ -1068,16 +1290,24 @@ exit "$status"
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    for (count, failing, all) in [
-        (0, false, false),
-        (1, false, false),
-        (3, false, false),
-        (7, false, false),
-        (12, false, false),
-        (12, true, false),
-        (12, true, true),
+    for (count, failing, all, cross) in [
+        (0, false, false, false),
+        (1, false, false, false),
+        (3, false, false, false),
+        (7, false, false, false),
+        (12, false, false, false),
+        (12, true, false, false),
+        (12, true, true, false),
+        (0, false, false, true),
+        (1, false, false, true),
+        (3, false, false, true),
+        (7, false, false, true),
+        (12, false, false, true),
+        (12, true, false, true),
     ] {
-        let events = dir.path().join(format!("events-{count}-{failing}-{all}"));
+        let events = dir
+            .path()
+            .join(format!("events-{count}-{failing}-{all}-{cross}"));
         let cli = AwsCli::with_environment(
             selection(),
             &script,
@@ -1093,14 +1323,33 @@ exit "$status"
             ]),
         )
         .unwrap();
+        let service = |index| {
+            if !cross {
+                "ec2"
+            } else if index % 2 == 0 {
+                "s3api"
+            } else {
+                "kms"
+            }
+        };
         let calls: Vec<_> = (0..count)
             .map(|index| AwsCall {
                 operation: "describe-volumes",
-                input: json!({"index":index,"count":count,"fail":failing && index == 0}),
+                input: json!({"index":index,"count":count,"fail":failing && index == 0,"service":service(index)}),
                 extra_args: vec!["--fixture-argument".into(), format!("index {index}")],
             })
             .collect();
-        let result = if all {
+        let result = if cross {
+            let calls: Vec<_> = calls
+                .into_iter()
+                .enumerate()
+                .map(|(index, call)| AwsServiceCall {
+                    service: service(index),
+                    call,
+                })
+                .collect();
+            cli.batch_call_cross_service(&calls)
+        } else if all {
             cli.batch_call_all("ec2", &calls)
         } else {
             cli.batch_call("ec2", &calls)
@@ -1217,6 +1466,345 @@ printf '%s\n' '{"Account":"123456789012","Arn":"arn:aws:sts::123456789012:assume
     assert_eq!(
         fs::read_to_string(capture.with_extension("env")).unwrap(),
         "developer\nus-east-1\ntrue\n1\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn aws_cli_returns_newly_authenticated_identity_once_and_keeps_later_identity_fresh() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("aws");
+    let identity = dir.path().join("identity");
+    let calls = dir.path().join("calls");
+    executable::write(&script, r#"#!/bin/sh
+case "$*" in
+ *export-credentials*)
+  printf 'export\n' >> "$ZDN_CALLS"
+  printf '%s\n' '{"Version":1,"AccessKeyId":"fixture-key","SecretAccessKey":"fixture-secret","SessionToken":"fixture-token","Expiration":"2099-01-01T00:00:00Z"}' ;;
+ *get-caller-identity*)
+  [ "$AWS_SESSION_TOKEN" = fixture-token ] || exit 90
+  printf 'identity\n' >> "$ZDN_CALLS"
+  exec /bin/cat "$ZDN_IDENTITY" ;;
+ *get-bucket-versioning*)
+  printf 'read\n' >> "$ZDN_CALLS"
+  printf '%s\n' '{"Status":"Enabled"}' ;;
+ *) exit 91 ;;
+esac
+"#).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let client = || {
+        AwsCli::with_environment(
+            selection(),
+            &script,
+            BTreeMap::from([
+                ("ZDN_CALLS".into(), calls.to_string_lossy().into_owned()),
+                (
+                    "ZDN_IDENTITY".into(),
+                    identity.to_string_lossy().into_owned(),
+                ),
+            ]),
+        )
+        .unwrap()
+        .expect_role(Some("arn:aws:iam::123456789012:role/deploy".into()))
+        .unwrap()
+        .cache_role_credentials()
+        .unwrap()
+    };
+    let initial = json!({"Account":ACCOUNT,
+        "Arn":"arn:aws:sts::123456789012:assumed-role/deploy/fixture","UserId":"first"});
+    fs::write(&identity, initial.to_string()).unwrap();
+    let api = client();
+    assert_eq!(api.verify_identity().unwrap().user_id, "first");
+    assert_eq!(fs::read_to_string(&calls).unwrap(), "export\nidentity\n");
+    let mut fresh = initial.clone();
+    fresh["UserId"] = json!("fresh");
+    fs::write(&identity, fresh.to_string()).unwrap();
+    assert_eq!(api.verify_identity().unwrap().user_id, "fresh");
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        "export\nidentity\nidentity\n"
+    );
+    // Even a warm credential cache must not supply a previous safety result.
+    fs::write(&identity, "").unwrap();
+    assert!(api.verify_identity().is_err());
+    fs::write(&identity, initial.to_string()).unwrap();
+    for (input, extra) in [
+        (json!({"fixture":true}), vec![]),
+        (json!({}), vec!["--query".into(), "Account".into()]),
+    ] {
+        fs::write(&calls, "").unwrap();
+        client()
+            .call("sts", "get-caller-identity", input, &extra)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&calls).unwrap(),
+            "export\nidentity\nidentity\n"
+        );
+    }
+    let mut wrong_role = initial.clone();
+    wrong_role["Arn"] = json!("arn:aws:sts::123456789012:assumed-role/other/fixture");
+    let mut wrong_account = initial.clone();
+    wrong_account["Account"] = json!("999999999999");
+    for bad in [
+        String::new(),
+        " \n".into(),
+        "{}".into(),
+        wrong_role.to_string(),
+        wrong_account.to_string(),
+    ] {
+        fs::write(&identity, bad).unwrap();
+        fs::write(&calls, "").unwrap();
+        let api = client();
+        assert!(api.verify_identity().is_err());
+        assert!(api
+            .call("s3api", "get-bucket-versioning", json!({}), &[])
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(&calls).unwrap(),
+            "export\nidentity\nexport\nidentity\n"
+        );
+        fs::write(&identity, initial.to_string()).unwrap();
+        assert_eq!(api.verify_identity().unwrap().user_id, "first");
+        assert_eq!(
+            fs::read_to_string(&calls).unwrap(),
+            "export\nidentity\nexport\nidentity\nexport\nidentity\n"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn aws_cli_reuses_only_authenticated_temporary_role_credentials() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("aws");
+    let exported = dir.path().join("export.json");
+    let identity = dir.path().join("identity.json");
+    let calls = dir.path().join("calls");
+    let export_error = dir.path().join("export-error");
+    let delay = dir.path().join("delay");
+    executable::write(&script, r#"#!/bin/sh
+[ -p /dev/fd/1 ] && [ -p /dev/fd/2 ] || exit 99
+case "$*" in
+ *export-credentials*)
+  [ -z "$AWS_ACCESS_KEY_ID$AWS_SECRET_ACCESS_KEY$AWS_SESSION_TOKEN" ] || exit 90
+  case "$*" in *'--profile developer'*) ;; *) exit 91;; esac
+  printf 'export\n' >> "$ZDN_CALLS"
+  if [ -s "$ZDN_EXPORT_ERROR" ]; then /bin/cat "$ZDN_EXPORT_ERROR" >&2; exit 1; fi
+  if [ -f "$ZDN_DELAY" ]; then printf 'started' > "$ZDN_DELAY.started"; sleep 2; fi
+  exec /bin/cat "$ZDN_EXPORT"
+  ;;
+ *)
+  case "$*" in *--profile*|*fixture-key*|*fixture-secret*|*fixture-token*) exit 92;; esac
+  [ "$AWS_ACCESS_KEY_ID" = fixture-key ] && [ "$AWS_SECRET_ACCESS_KEY" = fixture-secret ] || exit 93
+  case "$AWS_SESSION_TOKEN" in fixture-token|fixture-token-refreshed) ;; *) exit 93;; esac
+  case "$*" in
+   *get-caller-identity*)
+    if [ "$AWS_SESSION_TOKEN" = fixture-token-refreshed ]; then
+     printf '%s\n' '{"Account":"123456789012","Arn":"arn:aws:sts::123456789012:assumed-role/deploy/fixture","UserId":"refreshed"}'
+    else exec /bin/cat "$ZDN_IDENTITY"; fi;;
+   *get-bucket-versioning*) printf 'read\n' >> "$ZDN_CALLS"; printf '%s\n' '{"Status":"Enabled"}';;
+   *) exit 94;;
+  esac
+ ;;
+esac
+"#).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let credentials = json!({"Version":1,"AccessKeyId":"fixture-key","SecretAccessKey":"fixture-secret",
+        "SessionToken":"fixture-token","Expiration":"2099-01-01T00:00:00Z"});
+    fs::write(&exported, serde_json::to_vec(&credentials).unwrap()).unwrap();
+    fs::write(
+        &identity,
+        serde_json::to_vec(&json!({"Account":ACCOUNT,
+        "Arn":"arn:aws:sts::123456789012:assumed-role/deploy/fixture","UserId":"fixture"}))
+        .unwrap(),
+    )
+    .unwrap();
+    let client = || {
+        AwsCli::with_environment(
+            selection(),
+            &script,
+            BTreeMap::from([
+                ("ZDN_EXPORT".into(), exported.to_string_lossy().into_owned()),
+                (
+                    "ZDN_IDENTITY".into(),
+                    identity.to_string_lossy().into_owned(),
+                ),
+                ("ZDN_CALLS".into(), calls.to_string_lossy().into_owned()),
+                (
+                    "ZDN_EXPORT_ERROR".into(),
+                    export_error.to_string_lossy().into_owned(),
+                ),
+                ("ZDN_DELAY".into(), delay.to_string_lossy().into_owned()),
+            ]),
+        )
+        .unwrap()
+        .expect_role(Some("arn:aws:iam::123456789012:role/deploy".into()))
+        .unwrap()
+        .cache_role_credentials()
+        .unwrap()
+    };
+    let api = client();
+    let requests: Vec<_> = (0..8)
+        .map(|_| AwsCall {
+            operation: "get-bucket-versioning",
+            input: json!({"Bucket":"fixture"}),
+            extra_args: vec![],
+        })
+        .collect();
+    let results = api.batch_call("s3api", &requests).unwrap();
+    assert!(results
+        .into_iter()
+        .all(|r| r.unwrap() == json!({"Status":"Enabled"})));
+    assert_eq!(
+        api.clone()
+            .call("s3api", "get-bucket-versioning", json!({}), &[])
+            .unwrap(),
+        json!({"Status":"Enabled"})
+    );
+    assert_eq!(
+        fs::read_to_string(&calls)
+            .unwrap()
+            .lines()
+            .filter(|v| *v == "export")
+            .count(),
+        1
+    );
+    assert!(!format!("{api:?}").contains("fixture-secret"));
+    assert!(!format!("{api:?}").contains("fixture-token"));
+    // A separate controller client must not inherit another client's session.
+    client().verify_identity().unwrap();
+    assert_eq!(
+        fs::read_to_string(&calls)
+            .unwrap()
+            .lines()
+            .filter(|v| *v == "export")
+            .count(),
+        2
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let soon = std::process::Command::new("date")
+            .args(["-u", "-d", "+62 seconds", "+%Y-%m-%dT%H:%M:%SZ"])
+            .output()
+            .unwrap();
+        assert!(soon.status.success());
+        let mut expiring = credentials.clone();
+        expiring["Expiration"] = json!(String::from_utf8(soon.stdout).unwrap().trim());
+        fs::write(&exported, serde_json::to_vec(&expiring).unwrap()).unwrap();
+        let refreshing = client();
+        assert_eq!(refreshing.verify_identity().unwrap().user_id, "fixture");
+        let mut renewed = credentials.clone();
+        renewed["SessionToken"] = json!("fixture-token-refreshed");
+        fs::write(&exported, serde_json::to_vec(&renewed).unwrap()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert_eq!(refreshing.verify_identity().unwrap().user_id, "refreshed");
+    }
+    for (field, value) in [
+        ("Expiration", json!("2000-01-01T00:00:00Z")),
+        ("Expiration", Value::Null),
+        ("SessionToken", json!("fixture-token\n")),
+        ("Version", json!(2)),
+    ] {
+        let mut bad = credentials.clone();
+        bad[field] = value;
+        fs::write(&exported, serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(client()
+            .call("s3api", "get-bucket-versioning", json!({}), &[])
+            .is_err());
+    }
+    fs::write(&exported, serde_json::to_vec(&credentials).unwrap()).unwrap();
+    for raw in [
+        b"".to_vec(),
+        b" \n".to_vec(),
+        serde_json::to_vec(&json!({"Account":ACCOUNT,
+        "Arn":"arn:aws:iam::123456789012:user/developer","UserId":"fixture"}))
+        .unwrap(),
+    ] {
+        fs::write(&identity, raw).unwrap();
+        let error = client()
+            .call("s3api", "get-bucket-versioning", json!({}), &[])
+            .unwrap_err();
+        assert!(!format!("{error:#}").contains("fixture-secret"));
+    }
+    for (raw, expected) in [
+        (
+            "An error occurred (ThrottlingException): fixture-secret",
+            "ThrottlingException",
+        ),
+        (
+            "Unable to locate credentials: fixture-token",
+            "CredentialsUnavailable",
+        ),
+    ] {
+        fs::write(&export_error, raw).unwrap();
+        let error = client()
+            .call("s3api", "get-bucket-versioning", json!({}), &[])
+            .unwrap_err();
+        assert_eq!(error.downcast_ref::<AwsApiError>().unwrap().code, expected);
+        assert!(!format!("{error:#}").contains("fixture-secret"));
+        assert!(!format!("{error:#}").contains("fixture-token"));
+    }
+    fs::remove_file(&export_error).unwrap();
+    fs::write(
+        &identity,
+        serde_json::to_vec(&json!({"Account":ACCOUNT,
+        "Arn":"arn:aws:sts::123456789012:assumed-role/deploy/fixture","UserId":"fixture"}))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(&delay, "").unwrap();
+    let waiting = client();
+    let worker = waiting.clone();
+    let thread = std::thread::spawn(move || worker.verify_identity());
+    let start = std::time::Instant::now();
+    while !delay.with_extension("started").exists() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let start = std::time::Instant::now();
+    let error = waiting
+        .call_with_timeout(
+            "s3api",
+            "get-bucket-versioning",
+            json!({}),
+            &[],
+            std::time::Duration::from_millis(50),
+        )
+        .unwrap_err();
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(
+        error.downcast_ref::<AwsApiError>().unwrap().code,
+        "CommandInterrupted"
+    );
+    thread.join().unwrap().unwrap();
+    let error = client()
+        .call_with_timeout(
+            "s3api",
+            "get-bucket-versioning",
+            json!({}),
+            &[],
+            std::time::Duration::from_millis(50),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<AwsApiError>().unwrap().code,
+        "CommandInterrupted"
+    );
+    assert_eq!(
+        fs::read_to_string(&calls)
+            .unwrap()
+            .lines()
+            .filter(|v| *v == "read")
+            .count(),
+        9
+    );
+    assert!(
+        AwsCli::with_environment(selection(), &script, BTreeMap::new())
+            .unwrap()
+            .cache_role_credentials()
+            .is_err()
     );
 }
 
@@ -2145,6 +2733,230 @@ fn external_access_checks_trust_without_iam_mutations_or_pulumi_calls() {
     .unwrap();
     assert_eq!(completed.deployment, req.existing);
     assert_eq!(api.mutations(), mutations);
+}
+
+#[test]
+fn s3_batched_lease_admission_keeps_files_results_and_cas_bound_to_exact_keys() {
+    use std::cell::Cell;
+    struct BatchedObjects {
+        api: ObjectApi,
+        keys: [String; 2],
+        fault: Cell<&'static str>,
+        batches: Cell<usize>,
+    }
+    impl AwsApi for BatchedObjects {
+        fn call(&self, service: &str, op: &str, input: Value, extra: &[String]) -> Result<Value> {
+            self.api.call(service, op, input, extra)
+        }
+        fn batch_call_all(
+            &self,
+            service: &str,
+            calls: &[AwsCall<'_>],
+        ) -> Result<Vec<Result<Value>>> {
+            self.batches.set(self.batches.get() + 1);
+            assert_eq!(service, "s3api");
+            assert_eq!(calls.len(), 2);
+            assert_ne!(calls[0].extra_args, calls[1].extra_args);
+            for (call, key) in calls.iter().zip(&self.keys) {
+                assert_eq!(call.operation, "get-object");
+                assert_eq!(call.input["Key"], *key);
+                assert_eq!(call.extra_args.len(), 1);
+                assert!(std::path::Path::new(&call.extra_args[0]).is_file());
+            }
+            // Complete in reverse order; individual outcomes stay input ordered.
+            let mut replies: Vec<_> = calls
+                .iter()
+                .rev()
+                .map(|call| {
+                    self.call(
+                        service,
+                        call.operation,
+                        call.input.clone(),
+                        &call.extra_args,
+                    )
+                })
+                .collect();
+            replies.reverse();
+            match self.fault.get() {
+                "none" => (),
+                "missing" => {
+                    let _ = replies.pop();
+                }
+                "extra" => replies.push(Ok(json!({}))),
+                "reservation-error" => replies[0] = Err(error("AccessDenied")),
+                "lease-error" => replies[1] = Err(error("AccessDenied")),
+                "lease-etag" => replies[1] = Ok(json!({"ETag":""})),
+                "oversized" => fs::write(&calls[1].extra_args[0], vec![0; 65537]).unwrap(),
+                "swap-bodies" => {
+                    let first = fs::read(&calls[0].extra_args[0]).unwrap();
+                    let second = fs::read(&calls[1].extra_args[0]).unwrap();
+                    fs::write(&calls[0].extra_args[0], second).unwrap();
+                    fs::write(&calls[1].extra_args[0], first).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            Ok(replies)
+        }
+    }
+    let team = fixture_team();
+    let reservation = reservation();
+    let holder = owner();
+    let tombstone = LeaseRecord {
+        version: 1,
+        reservation: reservation.clone(),
+        owner: owner(),
+        expires_at: 90,
+        generation: 4,
+        released: true,
+    };
+    let api = BatchedObjects {
+        api: ObjectApi::default(),
+        keys: [reservation.key(), reservation.lease_key()],
+        fault: Cell::new("none"),
+        batches: Cell::new(0),
+    };
+    let install = |reservation_bytes: Vec<u8>, lease: Option<LeaseRecord>| {
+        let mut memory = api.api.objects.0.lock().unwrap();
+        memory.objects.clear();
+        memory.objects.insert(
+            reservation.key(),
+            MetadataObject {
+                bytes: reservation_bytes,
+                etag: "reservation-etag".into(),
+            },
+        );
+        if let Some(lease) = lease {
+            memory.objects.insert(
+                reservation.lease_key(),
+                MetadataObject {
+                    bytes: serde_json::to_vec(&lease).unwrap(),
+                    etag: "lease-etag".into(),
+                },
+            );
+        }
+        api.api.calls.lock().unwrap().clear();
+    };
+    let store = S3Metadata::new(&api, &team).unwrap();
+    for fault in [
+        "missing",
+        "extra",
+        "reservation-error",
+        "lease-error",
+        "lease-etag",
+        "oversized",
+        "swap-bodies",
+    ] {
+        install(
+            serde_json::to_vec(&reservation).unwrap(),
+            Some(tombstone.clone()),
+        );
+        api.fault.set(fault);
+        assert!(
+            acquire_lease(&store, &reservation, holder.clone(), 100, 300).is_err(),
+            "{fault}"
+        );
+        assert!(
+            api.api
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(op, _)| op == "get-object"),
+            "{fault}"
+        );
+    }
+    api.fault.set("none");
+    for fault in [
+        "reservation-owner",
+        "reservation-json",
+        "lease-reservation",
+        "lease-generation",
+        "lease-owner",
+        "lease-version",
+        "stale",
+        "other-holder",
+    ] {
+        let mut stored_reservation = reservation.clone();
+        let mut lease = tombstone.clone();
+        match fault {
+            "reservation-owner" => stored_reservation.owner_id = Uuid::new_v4(),
+            "reservation-json" => (),
+            "lease-reservation" => lease.reservation.owner_id = Uuid::new_v4(),
+            "lease-generation" => lease.generation = 0,
+            "lease-owner" => lease.owner.operation_id = Uuid::nil(),
+            "lease-version" => lease.version = 2,
+            "stale" => lease.released = false,
+            "other-holder" => {
+                lease.released = false;
+                lease.expires_at = 400;
+            }
+            _ => unreachable!(),
+        }
+        install(
+            if fault == "reservation-json" {
+                b"{}".to_vec()
+            } else {
+                serde_json::to_vec(&stored_reservation).unwrap()
+            },
+            Some(lease),
+        );
+        assert!(
+            acquire_lease(&store, &reservation, holder.clone(), 100, 300).is_err(),
+            "{fault}"
+        );
+        assert!(
+            api.api
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(op, _)| op == "get-object"),
+            "{fault}"
+        );
+    }
+    install(serde_json::to_vec(&reservation).unwrap(), Some(tombstone));
+    let lease = acquire_lease(&store, &reservation, holder.clone(), 100, 300).unwrap();
+    assert_eq!(lease.record.generation, 5);
+    assert_eq!(lease.record.owner, holder);
+    let calls = api.api.calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[2].0, "put-object");
+    assert_eq!(calls[2].1["Key"], reservation.lease_key());
+    assert_eq!(calls[2].1["IfMatch"], "lease-etag");
+    drop(calls);
+    install(serde_json::to_vec(&reservation).unwrap(), None);
+    let lease = acquire_lease(&store, &reservation, holder.clone(), 100, 300).unwrap();
+    assert_eq!(lease.record.generation, 1);
+    assert_eq!(api.api.calls.lock().unwrap()[2].1["IfNoneMatch"], "*");
+    api.api.calls.lock().unwrap().clear();
+    let repeated = acquire_lease(&store, &reservation, holder.clone(), 110, 300).unwrap();
+    assert_eq!(repeated, lease, "same holder must not extend the lease");
+    assert_eq!(api.api.calls.lock().unwrap().len(), 2);
+    api.api
+        .objects
+        .0
+        .lock()
+        .unwrap()
+        .objects
+        .remove(&reservation.key());
+    api.api.calls.lock().unwrap().clear();
+    let failure = acquire_lease(&store, &reservation, holder, 110, 300).unwrap_err();
+    assert!(failure.to_string().contains("network ID must be reserved"));
+    assert_eq!(api.api.calls.lock().unwrap().len(), 2);
+    assert!(api
+        .api
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|(op, _)| op == "get-object"));
+    let batches = api.batches.get();
+    let before = api.api.calls.lock().unwrap().len();
+    assert!(store
+        .get_batch(&[&reservation.key(), "pulumi/foreign"])
+        .is_err());
+    assert_eq!(api.batches.get(), batches);
+    assert_eq!(api.api.calls.lock().unwrap().len(), before);
 }
 
 #[test]
