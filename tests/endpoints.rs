@@ -241,6 +241,13 @@ fn fixed_session_documents_expose_only_a_local_port_parameter() {
             assert_eq!(resource["type"], "aws:ssm:Document");
             assert_eq!(resource["properties"]["name"], f.document_name(service));
             assert_eq!(resource["properties"]["documentType"], "Session");
+            // Content changes replace, never update, the fixed-name document.
+            assert_eq!(
+                resource["options"],
+                json!({"provider":"${provider}",
+                    "replaceOnChanges":["content","documentType","documentFormat"],
+                    "deleteBeforeReplace":true})
+            );
             let document: Value =
                 serde_json::from_str(resource["properties"]["content"].as_str().unwrap()).unwrap();
             assert_eq!(document["sessionType"], "Port");

@@ -483,3 +483,30 @@ fn unexpected_document_or_saved_installer_prevents_endpoint_publication() {
         );
     }
 }
+
+#[test]
+fn rendered_program_replaces_session_documents_instead_of_updating_them() {
+    let mut deployment = super::super::producer_tests::fixture_deployment();
+    deployment.cluster.as_mut().unwrap().client_access = true;
+    let program: serde_json::Value =
+        serde_yaml::from_str(&deployment.render().unwrap().to_yaml().unwrap()).unwrap();
+    let options = &program["resources"]["nodeRpcSessionDocument"]["options"];
+    assert_eq!(
+        options["replaceOnChanges"],
+        json!(["content", "documentType", "documentFormat"])
+    );
+    assert_eq!(options["deleteBeforeReplace"], true);
+    // Other resources keep their previous serialized options.
+    for (key, resource) in program["resources"].as_object().unwrap() {
+        if !key.ends_with("SessionDocument") {
+            assert!(
+                resource["options"].get("replaceOnChanges").is_none(),
+                "{key}"
+            );
+            assert!(
+                resource["options"].get("deleteBeforeReplace").is_none(),
+                "{key}"
+            );
+        }
+    }
+}

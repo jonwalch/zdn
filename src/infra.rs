@@ -528,6 +528,11 @@ pub struct ResourceOptions {
     pub ignore_changes: Vec<String>,
     #[serde(default)]
     pub retain_on_delete: bool,
+    /// Omitted when empty so existing programs keep their serialized bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replace_on_changes: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delete_before_replace: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -602,9 +602,11 @@ impl EndpointFile {
     }
 
     /// Confirm the default content immediately before creating sessions. This
-    /// does not need EC2 inventory or any deployment-state permission. The
-    /// administrator remains trusted to preserve documents between this check
-    /// and StartSession; IAM fixes the allowed document ARN, not its contents.
+    /// does not need EC2 inventory or any deployment-state permission. IAM fixes
+    /// the allowed document ARN, not its contents. The deployment role cannot
+    /// update a document in place, but any holder able to delete and recreate a
+    /// document with the same name remains trusted between this check and
+    /// StartSession.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "endpoints.endpoint_file.validate_live_documents")
@@ -750,7 +752,11 @@ pub fn session_document_resources(
                         "content":service.session_document().to_string(),
                         "tags":ownership_tags(scope, bootstrap_id, network_id)
                     },
-                    "options":{"provider":"${provider}"}
+                    // The deployment role cannot update documents in place.
+                    // Fixed `-v1` names require deletion before recreation.
+                    "options":{"provider":"${provider}",
+                        "replaceOnChanges":["content","documentType","documentFormat"],
+                        "deleteBeforeReplace":true}
                 }),
             )
         })

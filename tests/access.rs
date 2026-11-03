@@ -1414,14 +1414,19 @@ fn private_document_creation_and_mutation_stay_in_the_bootstrap_namespace() {
     }
     let owned = json!({"aws:ResourceTag/zdn:managed-by":"zdn","aws:ResourceTag/zdn:team-id":req.team.team_id,
         "aws:ResourceTag/zdn:bootstrap":req.team.bootstrap_id.to_string()});
-    for action in [
-        "ssm:UpdateDocument",
-        "ssm:DeleteDocument",
-        "ssm:StartSession",
-    ] {
+    for action in ["ssm:DeleteDocument", "ssm:StartSession"] {
         assert!(permitted(&policies, action, &arn, &owned), "{action}");
         assert!(!permitted(&policies, action, &arn, &json!({})), "{action}");
     }
+    // Participants may start sessions on these names whatever their content,
+    // so the deployment role must not rewrite them in place.
+    for action in ["ssm:UpdateDocument", "ssm:UpdateDocumentDefaultVersion"] {
+        assert!(!permitted(&policies, action, &arn, &owned), "{action}");
+        assert!(!permitted(&policies, action, "*", &owned), "{action}");
+    }
+    assert!(!serde_json::to_string(&policies)
+        .unwrap()
+        .contains("ssm:UpdateDocument"));
     assert!(!permitted(
         &policies,
         "ssm:RemoveTagsFromResource",
