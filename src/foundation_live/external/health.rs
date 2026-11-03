@@ -1,7 +1,10 @@
 //! Fresh observation only. No Pulumi, managed tools, reservation, lease,
 //! companion discovery, install, bootstrap or producer activation on controller.
 use super::*;
-use crate::health::{Check, Options, Report, Status, API_VERSION};
+use crate::health::{
+    Check, Options, ProducerHealth, ProducerState, ProductionWindow, Report, Status, API_VERSION,
+};
+use crate::state::{Binding, StateStore};
 
 #[cfg_attr(
     feature = "profiling",
@@ -90,8 +93,11 @@ impl<T: Runtime> Runtime for Budget<'_, T> {
     feature = "profiling",
     tracing::instrument(skip_all, name = "foundation_live.external.health.check")
 )]
+#[allow(clippy::too_many_arguments)]
 pub fn check(
     api: &dyn AwsApi,
+    store: &StateStore,
+    binding: &Binding,
     deployment: &Deployment,
     root: &Path,
     options: Options,
@@ -99,6 +105,8 @@ pub fn check(
     cancel: &AtomicBool,
 ) -> Result<Report> {
     validate(deployment, root, options)?;
+    // Local saved evidence only; health never sends or records a control.
+    let stop = super::qualification::producer_stop(store, binding, deployment, root)?;
     let budget = Budget {
         api,
         runtime,
@@ -120,6 +128,7 @@ pub fn check(
         payment_qualification: "pending".into(),
         launch_ready: false,
         checks: BTreeMap::new(),
+        producer: None,
     };
     let journal = root.join("health");
     foundation::private_directory(&journal)?;
@@ -155,21 +164,41 @@ pub fn check(
                         &mut || budget.remaining().map(|_| ()),
                     )
                 })();
+                let scheduled = action == "observe" && effective.block_interval_seconds.is_some();
                 let status = match observed {
                     Ok(value) => {
                         report.live_readiness_checked = true;
-                        let valid = if action == "observe" {
-                            validate_observation(&effective, &value, node.node_id == "node-1")
+                        if scheduled {
+                            let producer =
+                                observe_producer(&effective, &value, stop, runtime.unix_time()?)
+                                    .unwrap_or_else(|_| failed(&effective, ProducerState::Invalid));
+                            let status = match producer.state {
+                                ProducerState::Active
+                                | ProducerState::Stopped
+                                | ProducerState::Expired => Status::Ready,
+                                ProducerState::NotRunning => Status::NotReady,
+                                _ => Status::Invalid,
+                            };
+                            report.producer = Some(producer);
+                            status
+                        } else if if action == "observe" {
+                            validate_observation(&effective, &value, false)
                         } else {
                             validate_gateway(&effective, &value)
-                        };
-                        if valid.is_ok() {
+                        }
+                        .is_ok()
+                        {
                             Status::Ready
                         } else {
                             Status::Invalid
                         }
                     }
-                    Err(_) => Status::Unavailable,
+                    Err(_) => {
+                        if scheduled {
+                            report.producer = Some(failed(&effective, ProducerState::Unavailable));
+                        }
+                        Status::Unavailable
+                    }
                 };
                 let time = runtime.unix_time()?;
                 report.checks.insert(
@@ -179,10 +208,10 @@ pub fn check(
                         observed_at: (status != Status::Unavailable).then_some(time),
                         fresh: status != Status::Unavailable,
                         code: (status != Status::Ready).then(|| {
-                            if status == Status::Invalid {
-                                "invalid-observation"
-                            } else {
-                                "observation-unavailable"
+                            match status {
+                                Status::Invalid => "invalid-observation",
+                                Status::NotReady => "producer-not-running",
+                                _ => "observation-unavailable",
                             }
                             .into()
                         }),
@@ -211,4 +240,62 @@ pub fn check(
         }
         budget.sleep(Duration::from_secs(2));
     }
+}
+
+fn failed(runtime: &RuntimeRequest, state: ProducerState) -> ProducerHealth {
+    ProducerHealth {
+        node_id: runtime.provisioning.node_id.clone(),
+        state,
+        stop_control_id: None,
+        production: None,
+    }
+}
+
+/// Node readiness is always required. A running producer must be actively
+/// owned; a stopped one is acceptable only with an authenticated exhausted
+/// lifetime or saved deliberate-stop evidence. The host cannot distinguish a
+/// crash from a stop, so any other stopped producer is not running.
+fn observe_producer(
+    runtime: &RuntimeRequest,
+    value: &Value,
+    stop: Option<Uuid>,
+    now: u64,
+) -> Result<ProducerHealth> {
+    validate_observation(runtime, value, false)?;
+    let window = |activation: &Value, expired: bool| -> Result<ProductionWindow> {
+        let (activated, deadline) = runtime.validate_production(activation)?;
+        Ok(ProductionWindow {
+            activated_unix_seconds: activated,
+            deadline_unix_seconds: deadline,
+            expired: expired || now >= deadline,
+        })
+    };
+    let (state, production) = if !value["productionExpired"].is_null() {
+        validate_update_observation(runtime, value)?;
+        (
+            ProducerState::Expired,
+            Some(window(&value["productionExpired"], true)?),
+        )
+    } else {
+        // Older host helpers do not report the activation; omit the window.
+        let production = match value.get("productionActivation") {
+            None | Some(Value::Null) => None,
+            Some(activation) => Some(window(activation, false)?),
+        };
+        let state = if !value["producer"].is_null() {
+            validate_observation(runtime, value, true)?;
+            ProducerState::Active
+        } else if stop.is_some() {
+            ProducerState::Stopped
+        } else {
+            ProducerState::NotRunning
+        };
+        (state, production)
+    };
+    Ok(ProducerHealth {
+        node_id: runtime.provisioning.node_id.clone(),
+        state,
+        stop_control_id: stop.filter(|_| state == ProducerState::Stopped),
+        production,
+    })
 }

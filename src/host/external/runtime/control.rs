@@ -1003,9 +1003,10 @@ pub fn dispatch(
         false,
     )?
     .producer;
-    Ok(Some(
-        serde_json::json!({"observation":manifest.observation("ready")?,"readiness":readiness,"producer":producer}),
-    ))
+    Ok(Some(serde_json::json!({
+        "observation":manifest.observation("ready")?,"readiness":readiness,"producer":producer,
+        "productionActivation":manifest.observed_production(&node)?
+    })))
 }
 
 fn contract_limit() -> u64 {

@@ -466,5 +466,6 @@ pub(crate) fn check(
         payment_qualification: "pending".into(),
         launch_ready: false,
         checks,
+        producer: None,
     })
 }

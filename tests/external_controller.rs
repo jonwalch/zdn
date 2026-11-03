@@ -989,13 +989,19 @@ impl zdn::foundation::FoundationBackend for Lifecycle {
     }
 }
 
-fn control_fixture() -> (
+type ControlFixture = (
     tempfile::TempDir,
     zdn::state::StateStore,
     zdn::state::Binding,
     zdn::foundation::DeploymentFile,
     Deployment,
-) {
+);
+
+fn control_fixture() -> ControlFixture {
+    control_fixture_with(None)
+}
+
+fn control_fixture_with(limits: Option<zdn::config::ExternalProductionLimits>) -> ControlFixture {
     use zdn::{
         foundation::{self, DeploymentFile},
         native_peers::{NativeCohort, NativeInventoryStore, IDENTITY_SCHEMA},
@@ -1017,6 +1023,7 @@ fn control_fixture() -> (
     deployment.spec.network_id = binding.network_id;
     let mut request = request();
     request.node_count = 2;
+    request.production_limits = limits.clone();
     deployment.external =
         Some(ExternalDeployment::new(request.clone(), 18233, "tFixture".into()).unwrap());
     deployment.outputs = Some(outputs(&deployment));
@@ -1077,6 +1084,7 @@ fn control_fixture() -> (
         manifest.cpu_millis = allocation.vcpus * 1000 - zdn::infra::HOST_CPU_RESERVE_MILLIS;
         manifest.host_reserve_bytes = u64::from(allocation.host_reserve_gib) << 30;
         manifest.block_interval_seconds = (member.node_id == "node-1").then_some(25);
+        manifest.production_limits = limits.clone();
         inventory
             .bind_render_options(&mut manifest.chain.options)
             .unwrap();
@@ -1523,4 +1531,318 @@ fn external_dispatch_reuses_journaled_lifecycle_and_cleanup_ignores_missing_comp
             "release"
         ]
     );
+}
+
+/// Fixed host observations served through a fake SSM transport. Health may
+/// only dispatch the saved observe/gateway-observe scripts.
+struct ObservedHosts {
+    replies: std::cell::RefCell<BTreeMap<String, serde_json::Value>>,
+    commands: std::cell::RefCell<Vec<serde_json::Value>>,
+}
+impl zdn::aws::AwsApi for ObservedHosts {
+    fn call(
+        &self,
+        service: &str,
+        operation: &str,
+        mut input: serde_json::Value,
+        _: &[String],
+    ) -> eyre::Result<serde_json::Value> {
+        assert_eq!(service, "ssm");
+        match operation {
+            "send-command" => {
+                let script = input["Parameters"]["commands"][0].as_str().unwrap();
+                assert!(
+                    self.replies.borrow().contains_key(script),
+                    "health may only observe"
+                );
+                input["CommandId"] = json!(Uuid::new_v4());
+                self.commands.borrow_mut().push(input.clone());
+                Ok(json!({"Command":input}))
+            }
+            "get-command-invocation" => {
+                let commands = self.commands.borrow();
+                let command = commands
+                    .iter()
+                    .find(|c| c["CommandId"] == input["CommandId"])
+                    .unwrap();
+                let script = command["Parameters"]["commands"][0].as_str().unwrap();
+                Ok(
+                    json!({"CommandId":command["CommandId"],"InstanceId":input["InstanceId"],
+                    "DocumentName":command["DocumentName"],"DocumentVersion":command["DocumentVersion"],
+                    "Comment":command["Comment"],"Status":"Success","ResponseCode":0,
+                    "StandardOutputContent":self.replies.borrow()[script].to_string(),"StandardErrorContent":""}),
+                )
+            }
+            other => panic!("forbidden health operation {other}"),
+        }
+    }
+}
+
+struct HealthClock;
+impl zdn::foundation_live::Runtime for HealthClock {
+    fn unix_time(&self) -> eyre::Result<u64> {
+        Ok(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs())
+    }
+    fn monotonic(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+    fn sleep(&self, _: std::time::Duration) {}
+}
+
+fn saved_runtime(root: &std::path::Path, node: &str) -> runtime::Manifest {
+    runtime::Manifest::from_slice(
+        &std::fs::read(root.join(format!("{node}-external-runtime.json"))).unwrap(),
+    )
+    .unwrap()
+}
+
+/// Host observe replies for node-1 with the given producer fields, plus a
+/// ready follower and the node-1 gateway.
+fn observed_hosts(root: &std::path::Path, producer: serde_json::Value) -> ObservedHosts {
+    use zdn::foundation_live::external::runtime_script;
+    let mut replies = BTreeMap::new();
+    for node in ["node-1", "node-2"] {
+        let manifest = saved_runtime(root, node);
+        let role = manifest.chain.options.role.clone();
+        let mut value = json!({"observation":manifest.observation("ready").unwrap(),
+            "readiness":{"apiVersion":zdn::chain::readiness::API_VERSION,
+                "consensusFingerprint":manifest.provisioning.native_fingerprint,"role":role,
+                "effectiveRulesVerified":true,"historyPresent":true,
+                "miningReady":role == "producer","launchReady":false},
+            "producer":null});
+        if node == "node-1" {
+            for (key, field) in producer.as_object().unwrap() {
+                value[key] = field.clone();
+            }
+            replies.insert(
+                runtime_script(&manifest, "gateway-observe").unwrap(),
+                json!({"apiVersion":zdn::client_gateway::OBSERVATION_API_VERSION,
+                    "deploymentId":manifest.provisioning.deployment_id,"nodeId":"node-1",
+                    "consensusFingerprint":manifest.provisioning.native_fingerprint,
+                    "serviceSha256":manifest.chain.gateway_service_sha256().unwrap(),
+                    "endpoint":zdn::client_gateway::ENDPOINT,"status":"ready"}),
+            );
+        }
+        replies.insert(runtime_script(&manifest, "observe").unwrap(), value);
+    }
+    ObservedHosts {
+        replies: replies.into(),
+        commands: Vec::new().into(),
+    }
+}
+
+fn active_producer(root: &std::path::Path) -> serde_json::Value {
+    let manifest = saved_runtime(root, "node-1");
+    json!({"producer":{"controllerLocked":true,"identity":manifest.producer_identity(),
+        "intervalSecs":25,"phase":"waiting"}})
+}
+
+fn external_health(
+    hosts: &ObservedHosts,
+    store: &zdn::state::StateStore,
+    binding: &zdn::state::Binding,
+    file: &zdn::foundation::DeploymentFile,
+) -> serde_json::Value {
+    let deployment =
+        zdn::foundation::DeploymentFile::read_snapshot(store.root(), binding.network_id).unwrap();
+    serde_json::to_value(
+        zdn::foundation_live::external::health::check(
+            hosts,
+            store,
+            binding,
+            &deployment,
+            file.directory(),
+            zdn::health::Options::default(),
+            &HealthClock,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn external_health_accepts_authenticated_producer_stops_but_not_unexplained_ones() {
+    use zdn::{
+        foundation_live::external::qualification as controller,
+        host::external::runtime::qualification::Action,
+    };
+    let (_root, store, binding, file, mut deployment) = control_fixture();
+    let root = file.directory().to_path_buf();
+    let report = external_health(
+        &observed_hosts(&root, active_producer(&root)),
+        &store,
+        &binding,
+        &file,
+    );
+    assert_eq!(report["ready"], true, "{report}");
+    assert_eq!(report["producer"]["state"], "active", "{report}");
+    assert_eq!(report["producer"]["production"], json!(null));
+    // A stopped producer without saved deliberate-stop evidence may have
+    // crashed; it stays not-ready.
+    let stopped = observed_hosts(&root, json!({"producer":null}));
+    let report = external_health(&stopped, &store, &binding, &file);
+    assert_eq!(report["ready"], false, "{report}");
+    assert_eq!(report["producer"]["state"], "not-running");
+    assert_eq!(report["checks"]["node-1-observe"]["status"], "not-ready");
+    assert_eq!(
+        report["checks"]["node-1-observe"]["code"],
+        "producer-not-running"
+    );
+    // A malformed running producer is never treated as stopped.
+    let report = external_health(
+        &observed_hosts(&root, json!({"producer":{"phase":"stalled"}})),
+        &store,
+        &binding,
+        &file,
+    );
+    assert_eq!(report["ready"], false, "{report}");
+    assert_eq!(report["producer"]["state"], "invalid");
+    let mut backend = Lifecycle::default();
+    let intent = controller::prepare(
+        &deployment,
+        file.directory(),
+        "node-1",
+        Action::StopProducer,
+    )
+    .unwrap();
+    controller::execute(
+        &store,
+        &file,
+        &binding,
+        &mut deployment,
+        &mut backend,
+        intent.request.id,
+        false,
+        &mut |_, _| Ok(()),
+    )
+    .unwrap();
+    let report = external_health(&stopped, &store, &binding, &file);
+    assert_eq!(report["ready"], true, "{report}");
+    assert_eq!(report["producer"]["state"], "stopped");
+    assert_eq!(
+        report["producer"]["stopControlId"],
+        json!(intent.request.id),
+        "{report}"
+    );
+    // Later read-only controls cannot restart production.
+    let read = controller::prepare(
+        &deployment,
+        file.directory(),
+        "node-2",
+        Action::Read {
+            query: zdn::host::external::runtime::qualification::Query::Tip,
+        },
+    )
+    .unwrap();
+    controller::execute(
+        &store,
+        &file,
+        &binding,
+        &mut deployment,
+        &mut backend,
+        read.request.id,
+        false,
+        &mut |_, _| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(
+        external_health(&stopped, &store, &binding, &file)["producer"]["state"],
+        "stopped"
+    );
+    // Any other later operation, such as an update, may have restarted
+    // production, so earlier stop evidence no longer applies.
+    store
+        .begin_operation(
+            &binding,
+            "external-update",
+            zdn::state::OperationInput {
+                config_sha256: "ab".repeat(32),
+                source_manifest_sha256: None,
+                archive_sha256: None,
+            },
+            &["verify"],
+        )
+        .unwrap();
+    let report = external_health(&stopped, &store, &binding, &file);
+    assert_eq!(report["producer"]["state"], "not-running", "{report}");
+}
+
+/// Authenticated activation bytes for node-1, aged by the given offsets.
+fn aged_activation(manifest: &runtime::Manifest, start: i64, deadline: i64) -> serde_json::Value {
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let node = zdn::host::files::Directory::open(
+        directory.path(),
+        directory.path().metadata().unwrap().uid(),
+    )
+    .unwrap();
+    manifest.activate_production(&node).unwrap();
+    let path = directory.path().join("production-activation.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let now = value["activatedUnixSeconds"].as_i64().unwrap();
+    value["activatedUnixSeconds"] = json!(now + start);
+    value["deadlineUnixSeconds"] = json!(now + deadline);
+    value
+}
+
+#[test]
+fn external_health_accepts_a_stopped_producer_after_lifetime_exhaustion() {
+    let (_root, store, binding, file, _) =
+        control_fixture_with(Some(zdn::config::ExternalProductionLimits {
+            max_height: 121,
+            lifetime_seconds: 21_600,
+        }));
+    let root = file.directory().to_path_buf();
+    let manifest = saved_runtime(&root, "node-1");
+    let expired = aged_activation(&manifest, -21_700, -100);
+    let report = external_health(
+        &observed_hosts(
+            &root,
+            json!({"producer":null,"productionExpired":expired.clone()}),
+        ),
+        &store,
+        &binding,
+        &file,
+    );
+    assert_eq!(report["ready"], true, "{report}");
+    assert_eq!(report["producer"]["state"], "expired");
+    assert_eq!(
+        report["producer"]["production"],
+        json!({"activatedUnixSeconds":expired["activatedUnixSeconds"],
+            "deadlineUnixSeconds":expired["deadlineUnixSeconds"],"expired":true})
+    );
+    // A host claim of exhaustion must still be authenticated and genuinely past.
+    let early = aged_activation(&manifest, -100, 21_500);
+    let report = external_health(
+        &observed_hosts(
+            &root,
+            json!({"producer":null,"productionExpired":early.clone()}),
+        ),
+        &store,
+        &binding,
+        &file,
+    );
+    assert_eq!(report["ready"], false, "{report}");
+    // An active producer reports its unexpired, authenticated window.
+    let mut active = active_producer(&root);
+    active["productionActivation"] = early.clone();
+    let report = external_health(&observed_hosts(&root, active), &store, &binding, &file);
+    assert_eq!(report["ready"], true, "{report}");
+    assert_eq!(
+        report["producer"]["production"],
+        json!({"activatedUnixSeconds":early["activatedUnixSeconds"],
+            "deadlineUnixSeconds":early["deadlineUnixSeconds"],"expired":false})
+    );
+    // A foreign or altered activation is invalid, not merely unreported.
+    let mut active = active_producer(&root);
+    let mut forged = early;
+    forged["deadlineUnixSeconds"] = json!(forged["deadlineUnixSeconds"].as_u64().unwrap() + 1);
+    active["productionActivation"] = forged;
+    let report = external_health(&observed_hosts(&root, active), &store, &binding, &file);
+    assert_eq!(report["ready"], false, "{report}");
+    assert_eq!(report["producer"]["state"], "invalid");
 }

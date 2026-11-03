@@ -66,6 +66,43 @@ pub struct Report {
     pub payment_qualification: String,
     pub launch_ready: bool,
     pub checks: BTreeMap<String, Check>,
+    /// External deployments only: the designated producer's observed state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<ProducerHealth>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProducerState {
+    /// Running, owned and in a healthy phase.
+    Active,
+    /// Not running after the saved, completed `stopControlId` control.
+    Stopped,
+    /// Not running after the authenticated production lifetime ended.
+    Expired,
+    /// Not running without saved stop evidence, for example after a crash.
+    NotRunning,
+    Invalid,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProducerHealth {
+    pub node_id: String,
+    pub state: ProducerState,
+    pub stop_control_id: Option<Uuid>,
+    /// The retained activation reported by the host; never created or renewed.
+    pub production: Option<ProductionWindow>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionWindow {
+    pub activated_unix_seconds: u64,
+    pub deadline_unix_seconds: u64,
+    /// The host reported exhaustion, or the controller clock is past the deadline.
+    pub expired: bool,
 }
 
 /// Validate saved deployment proofs without credentials or cloud calls.

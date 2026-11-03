@@ -267,6 +267,23 @@ pending generation can still reconcile. Deadline expiry cannot retract an
 already-dispatched RPC. Omitted limits preserve legacy serialized bytes and
 behavior; a qualification plan requiring ceilings must explicitly supply them.
 
+External `devnet health` reports node-1's block producer separately as
+`producer: {nodeId, state, stopControlId, production}`. `production` carries
+the retained activation's `activatedUnixSeconds`, `deadlineUnixSeconds` and
+`expired`, read from the host's authenticated activation file without creating
+or renewing it (`null` without limits or with an older host helper). Health is
+ready when every node and the gateway are ready and the producer is `active`
+(running, owned, healthy phase), `stopped` or `expired`. `stopped` requires
+saved local evidence: the newest operation that could affect node-1 production
+is a completed node-1 `stop-producer`, `produce` or `restart-node` control,
+reported as `stopControlId`; read-only and other-node controls do not affect
+this, while launch, update or any other later operation ends it. `expired`
+requires a stopped producer and an authenticated, past deadline. The host
+cannot distinguish a crash from a stop, so any other stopped producer is
+`not-running` and the `node-1-observe` check is `not-ready` with code
+`producer-not-running`; `--wait` keeps retrying it. Health never starts a
+producer or records a control.
+
 The research cloud-wallet composition uses one supplied managed node-1 socket
 for both wallets, bounded per-node controls and local signed-byte inspection.
 It does not provision resources, create tunnels or clean up, and excludes

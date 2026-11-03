@@ -266,6 +266,24 @@ impl Manifest {
     /// Read the original authenticated lifetime, never creating or renewing it.
     /// This is not proof of a stopped service; the host must fence that too.
     pub fn expired_production(&self, node: &Directory) -> Result<Option<serde_json::Value>> {
+        match self.production_activation(node)? {
+            Some(activation) if activation.expired()? => {
+                Ok(Some(serde_json::to_value(activation)?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The authenticated retained activation, expired or not, for reporting.
+    /// Like expiry checks, this never creates, repairs or renews it.
+    pub fn observed_production(&self, node: &Directory) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .production_activation(node)?
+            .map(serde_json::to_value)
+            .transpose()?)
+    }
+
+    fn production_activation(&self, node: &Directory) -> Result<Option<ProductionActivation>> {
         self.validate()?;
         if self.block_interval_seconds.is_none() || self.production_limits.is_none() {
             return Ok(None);
@@ -283,12 +301,23 @@ impl Manifest {
             }
             Err(error) => return Err(error),
         }
-        let activation = ProductionActivation::read(self, node)?;
-        if activation.expired()? {
-            Ok(Some(serde_json::to_value(activation)?))
-        } else {
-            Ok(None)
-        }
+        ProductionActivation::read(self, node).map(Some)
+    }
+
+    /// Controller check of a host-reported activation. Returns the original
+    /// activation and deadline; it never proves the producer service state.
+    pub fn validate_production(&self, value: &serde_json::Value) -> Result<(u64, u64)> {
+        self.validate()?;
+        ensure!(
+            self.block_interval_seconds.is_some(),
+            "unscheduled producer"
+        );
+        let activation: ProductionActivation = contract::parse(&serde_json::to_vec(value)?)?;
+        activation.validate(self)?;
+        Ok((
+            activation.activated_unix_seconds,
+            activation.deadline_unix_seconds,
+        ))
     }
 
     /// Only update completion may accept an authenticated exhausted lifetime.
