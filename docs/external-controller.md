@@ -252,18 +252,37 @@ Prepare-only does not dispatch, and `--resume` never opens a replacement action
 file. Keep the original ID on an uncertain mutation; never delete its fence.
 
 External config `chain.productionLimits: {maxHeight: 121,
-lifetimeSeconds: 7200}` pins an optional absolute height and first-activation
-lifetime before launch. Lifetime must be 1–7200 seconds when explicitly set;
+lifetimeSeconds: 21600}` pins an optional absolute height and first-activation
+lifetime before launch. Lifetime must be 1–21600 seconds (six hours) when
+explicitly set;
 this is not a default producer expiry or a global ZDN lifetime. The authenticated
 producer activation publishes one retained, create-only deadline before startup;
 service/image restart never renews it. Scheduled and qualification production
 intersect their invocation limits with these immutable ceilings. The shared
-producer accepts an explicit per-invocation duration up to 7200 seconds too;
+producer accepts an explicit per-invocation duration up to 21600 seconds too,
+so scheduled production can use the whole remaining window;
 neither limit supplies a duration when omitted. Missing,
 expired or future activation fails closed for new generation, while existing
 pending generation can still reconcile. Deadline expiry cannot retract an
 already-dispatched RPC. Omitted limits preserve legacy serialized bytes and
 behavior; a qualification plan requiring ceilings must explicitly supply them.
+
+External `devnet health` reports node-1's block producer separately as
+`producer: {nodeId, state, stopControlId, production}`. `production` carries
+the retained activation's `activatedUnixSeconds`, `deadlineUnixSeconds` and
+`expired`, read from the host's authenticated activation file without creating
+or renewing it (`null` without limits or with an older host helper). Health is
+ready when every node and the gateway are ready and the producer is `active`
+(running, owned, healthy phase), `stopped` or `expired`. `stopped` requires
+saved local evidence: the newest operation that could affect node-1 production
+is a completed node-1 `stop-producer`, `produce` or `restart-node` control,
+reported as `stopControlId`; read-only and other-node controls do not affect
+this, while launch, update or any other later operation ends it. `expired`
+requires a stopped producer and an authenticated, past deadline. The host
+cannot distinguish a crash from a stop, so any other stopped producer is
+`not-running` and the `node-1-observe` check is `not-ready` with code
+`producer-not-running`; `--wait` keeps retrying it. Health never starts a
+producer or records a control.
 
 The research cloud-wallet composition uses one supplied managed node-1 socket
 for both wallets, bounded per-node controls and local signed-byte inspection.

@@ -167,9 +167,11 @@ impl ProducerOptions {
             "producer max blocks must be positive"
         );
         ensure!(
+            // Covers the largest external production lifetime, which scheduled
+            // production supplies as the remaining window.
             self.max_duration
-                .is_none_or(|d| !d.is_zero() && d <= Duration::from_secs(7200)),
-            "producer duration must be positive and at most two hours"
+                .is_none_or(|d| !d.is_zero() && d <= Duration::from_secs(21_600)),
+            "producer duration must be positive and at most six hours"
         );
         ensure!(
             !self.unpaced || self.max_blocks.is_some(),

@@ -5,8 +5,9 @@ Start with that release's `START-TPQ.md`; its current status supersedes historic
 pending-rehearsal statements in the unchanged bundled source guides.
 
 This is the opt-in Linux x86-64 companion-tool path, not ordinary ZDN Preview 4.
-Use the canonical TPQ walkthrough supplied as **START-TPQ.md** and retained at
-`docs/slh-dsa-b128s/zdn.md` in the TPQ documentation/source archive. Its static
+`START-TPQ.md` covers only download, verification and extraction. The canonical
+walkthrough is `tpq/docs/slh-dsa-b128s/zdn.md` in the starter archive (also
+`docs/slh-dsa-b128s/zdn.md` in the TPQ source archive). Its static
 starter files live under `docs/slh-dsa-b128s/zdn-preview/`. Start there for the
 complete preparation, import, source launch, wallet, recovery and cleanup journey.
 Do not use the ordinary chain-manifest/bundle, Ironwood backend or `zdn wallet`,
@@ -59,15 +60,17 @@ execution requires same-user trust. Host sandbox checks remain mandatory.
 keys. Nodes own persistent native identities and private cookies, not wallet
 authority. Do not distribute test funders or maintainers' operational directories.
 
-Follow START-TPQ.md in order:
+Follow START-TPQ.md, then that walkthrough, in order:
 
 1. Verify/extract all assets and review source/build/provenance pins.
 2. Prepare a **new** public seed (0..101) and separate **private** funder locally.
 3. Import only the public chain/profile plus approved Linux adapter. Review the
    seven public slots and create explicit `CoreTrust` byte/hash/selection pins.
-4. Bootstrap the disposable team through ZDN (real AWS mutation). Edit the
-   two-node external template, render source capture locally, then explicitly
-   launch its saved UUID (billed CodeBuild and deployment).
+4. Fill the two-node external template and run local `check`/`plan`. Then
+   bootstrap the disposable team through ZDN (real AWS mutation), render source
+   capture locally, and explicitly launch its saved UUID (billed CodeBuild and
+   deployment). Launch starts the producer's fixed production lifetime; the whole
+   wallet journey must finish inside it.
 5. Require strict readiness. Prepare typed controls locally and execute only
    their reviewed saved IDs. Stop production, establish a stable tip, and use
    bounded production to reach funding readiness (NU7 102, SLH 103; maturity 100).

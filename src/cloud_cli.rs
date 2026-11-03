@@ -1977,6 +1977,8 @@ pub fn devnet_discovery(command: DevnetCommand) -> Result<serde_json::Value> {
                 return Ok(serde_json::to_value(
                     foundation_live::external::health::check(
                         &api,
+                        &store,
+                        &binding,
                         &deployment,
                         &directory,
                         options,

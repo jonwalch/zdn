@@ -575,7 +575,7 @@ fn first_launch_limits_are_optional_canonical_and_bound_to_config_and_request() 
             .unwrap(),
         bytes
     );
-    for seconds in [3601, 7200] {
+    for seconds in [3601, 7200, 7201, 21_600] {
         request.production_limits.as_mut().unwrap().lifetime_seconds = seconds;
         let bytes = request.bytes().unwrap();
         assert_eq!(
@@ -587,7 +587,7 @@ fn first_launch_limits_are_optional_canonical_and_bound_to_config_and_request() 
             seconds
         );
     }
-    for (height, seconds) in [(0, 600), (1, 0), (1, 7201)] {
+    for (height, seconds) in [(0, 600), (1, 0), (1, 21_601)] {
         request.production_limits = Some(ExternalProductionLimits {
             max_height: height,
             lifetime_seconds: seconds,
@@ -602,9 +602,26 @@ fn first_launch_limits_are_optional_canonical_and_bound_to_config_and_request() 
 #[test]
 fn first_launch_activation_and_deadline_survive_service_and_image_restarts() {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use zdn::{chain::producer::ProducerOptions, host::external::runtime::ProductionAdmission};
+    use zdn::{
+        chain::{
+            producer::ProducerOptions,
+            rpc::{NodeRpc, RpcError},
+        },
+        host::external::runtime::ProductionAdmission,
+    };
+    struct Forward;
+    impl NodeRpc for Forward {
+        fn call(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+            _: Duration,
+        ) -> Result<serde_json::Value, RpcError> {
+            Ok(json!("forwarded"))
+        }
+    }
     let mut runtime = limited_producer();
-    runtime.production_limits.as_mut().unwrap().lifetime_seconds = 7200;
+    runtime.production_limits.as_mut().unwrap().lifetime_seconds = 21_600;
     let (root, directory) = production_directory();
     assert!(ProductionAdmission::load(&runtime, &directory).is_err());
     runtime.activate_production(&directory).unwrap();
@@ -612,15 +629,16 @@ fn first_launch_activation_and_deadline_survive_service_and_image_restarts() {
     ProductionAdmission::load(&runtime, &directory)
         .unwrap()
         .constrain(&mut fresh);
-    assert!(fresh.max_duration.unwrap() > Duration::from_secs(3600));
-    assert!(fresh.max_duration.unwrap() <= Duration::from_secs(7200));
+    // The scheduled window exceeds the former two-hour producer ceiling.
+    assert!(fresh.max_duration.unwrap() > Duration::from_secs(18_000));
+    assert!(fresh.max_duration.unwrap() <= Duration::from_secs(21_600));
     let path = root.path().join("production-activation.json");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
     // Age the retained fixture without sleeping or invoking a real service.
-    set_activation_times(&path, now - 6700, now + 500);
+    set_activation_times(&path, now - 21_100, now + 500);
     let bytes = std::fs::read(&path).unwrap();
     directory
         .publish(
@@ -655,6 +673,14 @@ fn first_launch_activation_and_deadline_survive_service_and_image_restarts() {
         admission.constrain(&mut qualification);
         assert_eq!(qualification.max_height, Some(42));
         assert!(qualification.max_duration.unwrap() <= Duration::from_secs(500));
+        // More than two hours after activation, generation is still admitted.
+        assert_eq!(
+            admission
+                .guard(&Forward)
+                .call("generate", json!([1]), Duration::from_secs(1))
+                .unwrap(),
+            json!("forwarded")
+        );
     }
     let mut changed = revision_fixture(&runtime);
     changed

@@ -288,6 +288,41 @@ pub fn execute(
     Ok(value)
 }
 
+/// Saved evidence that node-1's scheduled producer was deliberately stopped:
+/// the newest operation that could affect it is a completed node-1
+/// stop-producer, produce or restart-node control. Read-only controls and
+/// controls on other nodes cannot start it and are skipped. Any other
+/// operation, such as launch or update, may have restarted production, so it
+/// ends the search without evidence. Unreadable saved controls are not evidence.
+pub fn producer_stop(
+    store: &StateStore,
+    binding: &Binding,
+    deployment: &Deployment,
+    root: &Path,
+) -> Result<Option<Uuid>> {
+    for receipt in store.handoff_operations(binding)?.iter().rev() {
+        if receipt.kind != "external-control" {
+            return Ok(None);
+        }
+        let Ok(intent) = load(deployment, root, receipt.operation_id) else {
+            return Ok(None);
+        };
+        if read_only(&intent.request.action) || intent.node_id != "node-1" {
+            continue;
+        }
+        let complete = receipt
+            .phases
+            .iter()
+            .all(|p| matches!(p.status, PhaseStatus::Succeeded { .. }));
+        let stopping = matches!(
+            intent.request.action,
+            Action::StopProducer | Action::Produce { .. } | Action::RestartNode
+        );
+        return Ok((complete && stopping).then_some(receipt.operation_id));
+    }
+    Ok(None)
+}
+
 fn completed(receipt: &OperationReceipt) -> Option<Value> {
     receipt.phases.iter().find_map(|phase| {
         if phase.name == "control" {

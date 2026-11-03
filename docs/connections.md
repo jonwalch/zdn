@@ -322,6 +322,19 @@ This path does not open the operator's local state or read S3/Pulumi state. The
 AWS profile must authenticate to the file's account and have access to its fixed
 SSM documents and instances. The CLI checks the default document contents before
 starting a session. A document cannot select another remote host or port.
+IAM fixes which document names a participant may use, not their contents. The
+team deployment role cannot update these documents in place; ZDN replaces a
+document whose content changes. A deployment-role holder or administrator who
+can delete and recreate a document with the same name is still trusted not to
+do so between the CLI check and session start.
+
+Teams set up before this change keep `ssm:UpdateDocument` and
+`ssm:UpdateDocumentDefaultVersion` on their deployment role until the role is
+updated. For a ZDN-managed role, repeat the original `zdn setup bootstrap`
+command, with the same state directory, profile, backend and
+`--trust-principal` inputs, to apply the narrower `client-sessions` policy.
+Setup never changes a role supplied with `--existing-role-arn`; its owners must
+remove those two actions themselves.
 
 Relative `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CA_BUNDLE`, and
 `PATH` entries are resolved from the directory where you start `connect`.

@@ -769,7 +769,9 @@ pub fn deployment_policies(
                 "ssm:DocumentType":"Session"
             }})),
         conditional(json!(["ssm:AddTagsToResource"]), json!(documents), creating.clone()),
-        conditional(json!(["ssm:DeleteDocument", "ssm:UpdateDocument", "ssm:UpdateDocumentDefaultVersion"]), json!(documents), owned.clone()),
+        // No in-place update: participants may StartSession on these names
+        // whatever their content. Content changes replace the document.
+        conditional(json!(["ssm:DeleteDocument"]), json!(documents), owned.clone()),
         // Provider refresh/delete must be able to observe an absent document.
         allow(json!(["ssm:GetDocument", "ssm:DescribeDocument", "ssm:ListDocumentVersions", "ssm:ListTagsForResource", "ssm:DescribeDocumentPermission"]), json!(documents)),
         conditional(json!(["ssm:StartSession"]), json!(documents), owned.clone()),
