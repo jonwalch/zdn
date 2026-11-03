@@ -252,13 +252,15 @@ Prepare-only does not dispatch, and `--resume` never opens a replacement action
 file. Keep the original ID on an uncertain mutation; never delete its fence.
 
 External config `chain.productionLimits: {maxHeight: 121,
-lifetimeSeconds: 7200}` pins an optional absolute height and first-activation
-lifetime before launch. Lifetime must be 1–7200 seconds when explicitly set;
+lifetimeSeconds: 21600}` pins an optional absolute height and first-activation
+lifetime before launch. Lifetime must be 1–21600 seconds (six hours) when
+explicitly set;
 this is not a default producer expiry or a global ZDN lifetime. The authenticated
 producer activation publishes one retained, create-only deadline before startup;
 service/image restart never renews it. Scheduled and qualification production
 intersect their invocation limits with these immutable ceilings. The shared
-producer accepts an explicit per-invocation duration up to 7200 seconds too;
+producer accepts an explicit per-invocation duration up to 21600 seconds too,
+so scheduled production can use the whole remaining window;
 neither limit supplies a duration when omitted. Missing,
 expired or future activation fails closed for new generation, while existing
 pending generation can still reconcile. Deadline expiry cannot retract an

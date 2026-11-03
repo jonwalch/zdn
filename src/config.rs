@@ -78,8 +78,8 @@ impl ExternalProductionLimits {
             "external production height must be positive"
         );
         ensure!(
-            (1..=7200).contains(&self.lifetime_seconds),
-            "external production lifetime must be 1 to 7200 seconds"
+            (1..=21_600).contains(&self.lifetime_seconds),
+            "external production lifetime must be 1 to 21600 seconds"
         );
         Ok(())
     }
