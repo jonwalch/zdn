@@ -56,8 +56,9 @@ path. See [requirements](#requirements-and-build).
 ZDN runs Zakura in Linux x86-64 containers on AWS. You can supply your own
 Git checkout and Dockerfile, or prepare a container using a Zakura-hosted binary.
 All paths must satisfy the [node image contract](docs/image-contract.md), including
-the custom-Testnet configuration and diagnostic RPCs; an arbitrary upstream
-release is not automatically compatible.
+the custom-Testnet configuration. Releases without ZDN's diagnostic RPCs, such
+as Zakura v1.8.5, run with [narrower rule checks](docs/bootstrap-readiness.md#nodes-without-the-diagnostics);
+an arbitrary upstream release is still not automatically compatible.
 
 ### Your Git checkout
 

@@ -120,6 +120,8 @@ struct Sim {
     replace_chain_at_final_rules: Option<BTreeMap<usize, String>>,
     rule_reads: usize,
     call_millis: u64,
+    /// A stock node: no Zakura diagnostics, only standard chain information.
+    stock: bool,
 }
 
 struct FakeNode {
@@ -167,6 +169,7 @@ impl FakeNode {
                 replace_chain_at_final_rules: None,
                 rule_reads: 0,
                 call_millis: 0,
+                stock: false,
             }),
         }
     }
@@ -212,6 +215,41 @@ impl NodeRpc for FakeNode {
             }
         }
         match method {
+            "getchainrules" | "inspectchainblock" if sim.stock => {
+                Err(remote(-32601, "Method not found"))
+            }
+            "getblockchaininfo" if sim.stock => {
+                // Literal Zakura shape. An empty state reports configured genesis.
+                let (height, best) = sim
+                    .chain
+                    .last_key_value()
+                    .map_or((0, hash(0)), |(height, hash)| (*height, hash.clone()));
+                let status = if height == 0 { "pending" } else { "active" };
+                let upgrades: serde_json::Map<_, _> = [
+                    ("Overwinter", "5ba81b19"),
+                    ("Sapling", "76b809bb"),
+                    ("Blossom", "2bb40e60"),
+                    ("Heartwood", "f5b9230b"),
+                    ("Canopy", "e9ff75a6"),
+                    ("NU5", "c2d6d0b4"),
+                    ("NU6", "c8e71055"),
+                    ("NU6.1", "4dec4df0"),
+                    ("NU6.2", "5437f330"),
+                    ("NU6.3", "37a5165b"),
+                ]
+                .into_iter()
+                .map(|(name, branch)| {
+                    (
+                        branch.to_owned(),
+                        json!({"name":name,"activationheight":1,"status":status}),
+                    )
+                })
+                .collect();
+                Ok(json!({
+                    "chain":"test","blocks":height,"bestblockhash":best,"upgrades":upgrades,
+                    "consensus":{"chaintip":if height == 0 {"00000000"} else {"37a5165b"},"nextblock":"37a5165b"}
+                }))
+            }
             "getchainrules" => {
                 sim.rule_reads += 1;
                 if sim.rule_reads == 2 {
@@ -392,6 +430,66 @@ fn full_bundle_is_decoded_before_mutation_and_success_is_actual_checkpoint_histo
     assert_eq!(second.already_present_blocks, 3);
     assert_eq!(second.submission_attempts, 0);
     assert_eq!(node.submissions(), 3);
+}
+
+#[test]
+fn stock_node_loads_checkpointed_history_and_reports_the_unverified_diagnostics() {
+    let fixture = Fixture::new(3);
+    let clock = FakeClock::default();
+    let node = fixture.node(&clock);
+    node.state.lock().unwrap().stock = true;
+    let report = load_seed_history(
+        &fixture.manifest,
+        &fixture.bundle,
+        &node,
+        &clock,
+        &options(),
+    )
+    .unwrap();
+    assert_eq!(report.submitted_blocks, 3);
+    assert_eq!(report.seed_tip_hash, hash(2));
+    assert!(report.seed_history_present && report.checkpoint_acceptance);
+    assert!(!report.block_decoding_verified && !report.effective_rules_verified);
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["rulesEvidence"],
+        "standard-rpc"
+    );
+    // The diagnostics are probed once each; nothing retries them per block.
+    let methods = node.methods();
+    assert_eq!(
+        methods.iter().filter(|m| *m == "inspectchainblock").count(),
+        1
+    );
+    assert_eq!(methods.iter().filter(|m| *m == "getchainrules").count(), 2);
+
+    // A stock node with another genesis still fails before any submission.
+    let node = fixture.node(&clock);
+    node.state.lock().unwrap().stock = true;
+    node.state.lock().unwrap().chain = BTreeMap::from([(0, "ee".repeat(32))]);
+    let message = error(&fixture, &node, &clock, &options());
+    assert!(message.contains("genesis does not match"), "{message}");
+    assert_eq!(node.submissions(), 0);
+
+    // Skipping inspection is reserved for nodes that also lack chain rules.
+    struct NoInspection<'a>(&'a FakeNode);
+    impl NodeRpc for NoInspection<'_> {
+        fn call(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+            if method == "inspectchainblock" {
+                return Err(remote(-32601, "Method not found"));
+            }
+            self.0.call(method, params, timeout)
+        }
+    }
+    let node = fixture.node(&clock);
+    assert!(load_seed_history(
+        &fixture.manifest,
+        &fixture.bundle,
+        &NoInspection(&node),
+        &clock,
+        &options()
+    )
+    .is_err());
+    assert_eq!(node.submissions(), 0);
 }
 
 #[test]

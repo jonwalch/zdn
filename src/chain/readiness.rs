@@ -6,6 +6,14 @@
 //! Testnet `ParametersBuilder`. Same-height upgrades collapse in builder order.
 //! A matching template is a mining observation, not payment qualification: a
 //! non-long-poll template can omit transactions while the mempool is inactive.
+//!
+//! Stock Zakura releases have no `getchainrules`. For ordinary manifests, a
+//! JSON-RPC `-32601` reply selects the narrower standard-RPC observation: the
+//! node's parsed Testnet kind, activation heights and branch IDs from
+//! `getblockchaininfo`, and its configured or stored genesis. Network magic,
+//! checkpoints, subsidy, difficulty and the Orchard rule remain unobserved, so
+//! such reports keep `effectiveRulesVerified` false. External compiled
+//! contracts never fall back.
 
 use super::{
     manifest::{ConsensusManifest, ProofOfWork},
@@ -52,13 +60,26 @@ pub struct ObservedTip {
     pub hash: String,
 }
 
+/// The node interface that established a rule observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RulesEvidence {
+    /// The complete parsed-rule projection from `getchainrules`.
+    ChainRules,
+    /// Only `getblockchaininfo` and best-chain genesis, for nodes without
+    /// `getchainrules`.
+    StandardRpc,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadinessReport {
     pub api_version: String,
     pub consensus_fingerprint: String,
     pub role: NodeRole,
+    /// True only when every `getchainrules` field matched the manifest.
     pub effective_rules_verified: bool,
+    pub rules_evidence: RulesEvidence,
     pub history_present: bool,
     pub checked_history: usize,
     pub tip: ObservedTip,
@@ -71,7 +92,8 @@ pub struct ReadinessReport {
 
 /// Compare every covered parsed rule, without a state or mutation RPC. Unknown
 /// schema fields, omitted null-valued fields, and unsupported profiles fail
-/// closed. The transport must honor the supplied timeout.
+/// closed. The transport must honor the supplied timeout, which bounds each
+/// request; a node without `getchainrules` needs up to three requests.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(skip_all, name = "chain.readiness.verify_rules")
@@ -80,12 +102,12 @@ pub fn verify_rules(
     manifest: &ConsensusManifest,
     rpc: &impl NodeRpc,
     timeout: Duration,
-) -> Result<()> {
+) -> Result<RulesEvidence> {
     ensure!(
         !timeout.is_zero() && timeout <= Duration::from_secs(60),
         "rule request timeout must be positive and at most 60 seconds"
     );
-    PreparedRules::new(manifest)?.verify(rpc, timeout)
+    PreparedRules::new(manifest)?.verify(rpc, || Ok(timeout))
 }
 
 /// Operation-local immutable expectations, never a cached node observation.
@@ -93,6 +115,13 @@ pub fn verify_rules(
 pub(crate) struct PreparedRules {
     expected: Value,
     exact: bool,
+    /// The standard-RPC projection; absent where no fallback is allowed.
+    standard: Option<StandardRules>,
+}
+
+struct StandardRules {
+    genesis: String,
+    upgrades: Vec<(String, u32, String)>,
 }
 
 impl PreparedRules {
@@ -101,9 +130,15 @@ impl PreparedRules {
         tracing::instrument(skip_all, name = "chain.readiness.prepared_rules.new")
     )]
     pub(crate) fn new(manifest: &ConsensusManifest) -> Result<Self> {
+        let expected = expected_rules(manifest)?;
+        let manifest = manifest.normalized()?;
         Ok(Self {
-            expected: expected_rules(manifest)?,
+            expected,
             exact: false,
+            standard: Some(StandardRules {
+                genesis: manifest.genesis.hash.clone(),
+                upgrades: upgrade_branches(&manifest),
+            }),
         })
     }
 
@@ -112,7 +147,14 @@ impl PreparedRules {
         Self {
             expected: compiled.expected_rules.clone(),
             exact: true,
+            standard: None,
         }
+    }
+
+    /// Only an explicit "method not found" selects the standard projection;
+    /// every other failure keeps its original meaning.
+    pub(crate) fn falls_back(&self, error: &RpcError) -> bool {
+        self.standard.is_some() && matches!(error, RpcError::Remote { code: -32601, .. })
     }
 
     fn compare(&self, actual: Value) -> Result<()> {
@@ -131,20 +173,70 @@ impl PreparedRules {
         }
     }
 
+    /// `timeout` supplies each request's bound, so callers can cap every
+    /// request by their remaining deadline.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "chain.readiness.prepared_rules.verify")
     )]
-    pub(crate) fn verify(&self, rpc: &impl NodeRpc, timeout: Duration) -> Result<()> {
-        ensure!(
-            !timeout.is_zero() && timeout <= Duration::from_secs(60),
-            "rule request timeout must be positive and at most 60 seconds"
-        );
-        let actual = rpc
-            .call("getchainrules", json!([]), timeout)
-            .context("read node effective rules")?;
-        self.compare(actual)
+    pub(crate) fn verify(
+        &self,
+        rpc: &impl NodeRpc,
+        timeout: impl Fn() -> Result<Duration>,
+    ) -> Result<RulesEvidence> {
+        let timeout = || {
+            let timeout = timeout()?;
+            ensure!(
+                !timeout.is_zero() && timeout <= Duration::from_secs(60),
+                "rule request timeout must be positive and at most 60 seconds"
+            );
+            Ok(timeout)
+        };
+        let actual = match rpc.call("getchainrules", json!([]), timeout()?) {
+            Err(error) if self.falls_back(&error) => {
+                let standard = self
+                    .standard
+                    .as_ref()
+                    .expect("fallback requires a projection");
+                verify_standard(standard, rpc, timeout)?;
+                return Ok(RulesEvidence::StandardRpc);
+            }
+            result => result.context("read node effective rules")?,
+        };
+        self.compare(actual)?;
+        Ok(RulesEvidence::ChainRules)
     }
+}
+
+/// With no stored block, Zakura reports its configured genesis as the tip;
+/// otherwise height zero is the stored genesis, which must match its config.
+fn verify_standard(
+    standard: &StandardRules,
+    rpc: &impl NodeRpc,
+    timeout: impl Fn() -> Result<Duration>,
+) -> Result<()> {
+    let info = rpc
+        .call("getblockchaininfo", json!([]), timeout()?)
+        .context("read node chain information")?;
+    let tip = ObservedTip {
+        height: read_height(&info["blocks"], "blockchain-info height")?,
+        hash: read_hash(&info["bestblockhash"], "blockchain-info hash")?,
+    };
+    check_chain_info(&standard.upgrades, &tip, info)?;
+    let genesis = if tip.height == 0 {
+        tip.hash
+    } else {
+        read_hash(
+            &rpc.call("getblockhash", json!([0]), timeout()?)
+                .context("read node genesis")?,
+            "genesis hash",
+        )?
+    };
+    ensure!(
+        genesis == standard.genesis,
+        "node genesis does not match the supported consensus manifest"
+    );
+    Ok(())
 }
 
 /// Observe a single node. No block is submitted or generated. A report is a
@@ -186,10 +278,7 @@ impl PreparedReadiness {
         let history = required_history(&manifest)?;
         let fingerprint = manifest.fingerprint()?;
         Ok(Self {
-            upgrades: declared_upgrades(&manifest)
-                .into_iter()
-                .map(|(name, height)| (name.into(), height, branch_id(name).into()))
-                .collect(),
+            upgrades: upgrade_branches(&manifest),
             proof_of_work_disabled: manifest.difficulty.proof_of_work == ProofOfWork::Disabled,
             rules,
             history,
@@ -219,7 +308,11 @@ impl PreparedReadiness {
         }
     }
 
-    pub(crate) fn verify_rules(&self, rpc: &impl NodeRpc, timeout: Duration) -> Result<()> {
+    pub(crate) fn verify_rules(
+        &self,
+        rpc: &impl NodeRpc,
+        timeout: impl Fn() -> Result<Duration>,
+    ) -> Result<RulesEvidence> {
         self.rules.verify(rpc, timeout)
     }
 
@@ -252,12 +345,13 @@ impl PreparedReadiness {
         for attempt in 1..=MAX_ATTEMPTS {
             budget.remaining().with_context(|| last_wait.clone())?;
             match observe(&self.upgrades, &self.rules, &self.history, &mut budget) {
-                Ok(tip) => {
+                Ok((tip, rules_evidence)) => {
                     return Ok(ReadinessReport {
                         api_version: API_VERSION.into(),
                         consensus_fingerprint: self.fingerprint.clone(),
                         role: options.role,
-                        effective_rules_verified: true,
+                        effective_rules_verified: rules_evidence == RulesEvidence::ChainRules,
+                        rules_evidence,
                         history_present: true,
                         checked_history: self.history.len(),
                         tip,
@@ -440,6 +534,14 @@ fn declared_upgrades(manifest: &ConsensusManifest) -> Vec<(&'static str, u32)> {
     upgrades
 }
 
+/// Declared upgrades with their branch IDs, as `getblockchaininfo` lists them.
+fn upgrade_branches(manifest: &ConsensusManifest) -> Vec<(String, u32, String)> {
+    declared_upgrades(manifest)
+        .into_iter()
+        .map(|(name, height)| (name.into(), height, branch_id(name).into()))
+        .collect()
+}
+
 fn effective_upgrades(manifest: &ConsensusManifest) -> BTreeMap<u32, &'static str> {
     declared_upgrades(manifest)
         .into_iter()
@@ -588,8 +690,8 @@ fn observe(
     rules: &PreparedRules,
     history: &BTreeMap<u32, String>,
     budget: &mut Budget<'_, impl NodeRpc, impl Clock>,
-) -> ObservationResult<ObservedTip> {
-    rules.compare(budget.call("getchainrules", json!([]))?)?;
+) -> ObservationResult<(ObservedTip, RulesEvidence)> {
+    let evidence = observe_rules(rules, budget)?;
     let tip = read_tip(budget)?;
     if tip.height < *history.last_key_value().unwrap().0 {
         return Err(ObservationError::Wait(
@@ -618,13 +720,40 @@ fn observe(
     // This never accepts a side-chain submit response in place of best-chain state.
     check_history(history, budget)?;
     check_tip_hash(&tip, budget)?;
-    rules.compare(budget.call("getchainrules", json!([]))?)?;
+    // A node that loses or gains the diagnostic mid-observation is not the
+    // node that was checked first.
+    if observe_rules(rules, budget)? != evidence {
+        return Err(eyre!("node rule diagnostics changed during observation").into());
+    }
     if read_tip(budget)? != tip {
         return Err(ObservationError::Wait(
             "chain tip moved during observation".into(),
         ));
     }
-    Ok(tip)
+    Ok((tip, evidence))
+}
+
+/// Every observation also checks `getblockchaininfo` and genesis history,
+/// which together cover the standard projection when the node has no
+/// `getchainrules`.
+fn observe_rules(
+    rules: &PreparedRules,
+    budget: &mut Budget<'_, impl NodeRpc, impl Clock>,
+) -> ObservationResult<RulesEvidence> {
+    match budget.call("getchainrules", json!([])) {
+        Ok(actual) => {
+            rules.compare(actual)?;
+            Ok(RulesEvidence::ChainRules)
+        }
+        Err(ObservationError::Fatal(error))
+            if error
+                .downcast_ref::<RpcError>()
+                .is_some_and(|error| rules.falls_back(error)) =>
+        {
+            Ok(RulesEvidence::StandardRpc)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn read_tip(budget: &mut Budget<'_, impl NodeRpc, impl Clock>) -> ObservationResult<ObservedTip> {
@@ -766,8 +895,14 @@ mod external_tests {
         let rules = PreparedRules {
             expected: expected.clone(),
             exact: true,
+            standard: None,
         };
         rules.compare(expected.clone()).unwrap();
+        // Compiled external contracts never accept a node without the diagnostic.
+        assert!(!rules.falls_back(&RpcError::Remote {
+            code: -32601,
+            message: "Method not found".into()
+        }));
         let mut changed = expected;
         changed["rules"]["genesisHash"] = "AB".repeat(32).into();
         assert!(rules.compare(changed).is_err());

@@ -9,9 +9,12 @@ manifest digest**. A tag, a release name, and a multi-platform index digest do
 not satisfy this contract. Keep three files with the image: its record, the
 exact registry manifest bytes, and the exact registry configuration bytes.
 
-Supply an image that implements the required diagnostics and the runtime paths below.
-The record declares those capabilities. Bootstrap and readiness must check
-the running node before it can join a devnet.
+Supply an image that implements the runtime paths below. Images with Zakura's
+chain-rule and block-inspection diagnostics get full checks; stock releases,
+such as v1.8.5, get [narrower checks](bootstrap-readiness.md#nodes-without-the-diagnostics).
+The record declares the diagnostic capabilities either way, so read the
+readiness report's `rulesEvidence`, not the record, to see which checks ran.
+Bootstrap and readiness must check the running node before it can join a devnet.
 
 ## Record
 

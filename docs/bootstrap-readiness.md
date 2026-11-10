@@ -8,8 +8,9 @@ These are advanced commands for an existing node. Normal [network launch](previe
 loads and checks history automatically; do not repeat bootstrap manually on a
 running deployment to bypass lifecycle recovery.
 
-These commands require a Zakura build with the authenticated `getchainrules` and
-`inspectchainblock` diagnostics. An older node fails before block submission.
+These commands fully check a Zakura build with the authenticated `getchainrules`
+and `inspectchainblock` diagnostics. Stock Zakura releases, including v1.8.5,
+have neither and get [narrower checks](#nodes-without-the-diagnostics).
 Use the running node's cookie file and a numeric loopback RPC endpoint, directly
 or through an existing private tunnel. The transport rejects public addresses,
 redirects, environment proxies, and cookies readable by other users.
@@ -122,6 +123,36 @@ Orchard rule, and explicit experiment state. The schema is
 `inspectchainblock` uses the node's decoder, canonical serializer, and hash
 calculation. Its schema is `zakura-block-inspection/v1`. Both diagnostics require
 authenticated admin access. Unsupported network/rule types fail closed.
+
+## Nodes without the diagnostics
+
+When `getchainrules` returns JSON-RPC `-32601` (method not found), ordinary
+manifests fall back to standard RPCs. The rule check then compares only:
+
+- the `test` chain name, every declared upgrade's activation height and branch
+  ID, and the tip and next-block branch IDs, from `getblockchaininfo`;
+- the genesis hash: an empty node reports its configured genesis, and a node with
+  blocks must have the saved genesis at height 0.
+
+Network magic, checkpoints, subsidy, funding streams, lockbox outputs,
+difficulty, proof-of-work mode and the Orchard rule are not observed. ZDN
+renders them into the node configuration, but nothing confirms that the node
+parsed them as intended. Reports then show `effectiveRulesVerified: false` and
+`rulesEvidence: "standard-rpc"`; full checks show `"chain-rules"`. `chain
+wait-rpc`, `bootstrap` and `readiness` print both fields, and deployments
+accept either. A node whose evidence changes within one command fails it.
+
+When such a node also returns `-32601` from `inspectchainblock` for genesis,
+bootstrap skips decoding before submission and reports
+`blockDecodingVerified: false`. Every saved block must still reach the best
+chain with its saved hash and parent. A block that the node cannot decode then
+fails only after earlier saved blocks are committed; rerunning bootstrap
+reconciles that prefix.
+
+Every other error, including other codes from either method, still fails
+closed. External compiled contracts never fall back. Zakura also returns
+`-32601` for admin methods on a restricted listener; ZDN's cookie-authenticated
+RPC is not restricted.
 
 Fast tests use scripted RPC, fake clocks, independent wire fixtures, loopback
 HTTP, and temporary files. They cover wrong rules/history, empty-state fallbacks,

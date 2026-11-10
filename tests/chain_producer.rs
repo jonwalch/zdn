@@ -723,8 +723,8 @@ fn wrong_rules_authentication_and_protocol_fail_before_any_generate() {
         RpcError::Unauthorized,
         RpcError::Protocol("malformed response".into()),
         RpcError::Remote {
-            code: -32601,
-            message: "missing method".into(),
+            code: -1,
+            message: "failed".into(),
         },
     ] {
         let fixture = Fixture::new(1);
@@ -732,6 +732,17 @@ fn wrong_rules_authentication_and_protocol_fail_before_any_generate() {
         assert!(fixture.run().is_err());
         assert!(fixture.node.generate_times().is_empty());
     }
+    // Only a missing method selects the standard-RPC observation of stock nodes.
+    let fixture = Fixture::new(1);
+    fixture.node.sim.lock().unwrap().force_error = Some((
+        "getchainrules".into(),
+        RpcError::Remote {
+            code: -32601,
+            message: "Method not found".into(),
+        },
+    ));
+    fixture.run().unwrap();
+    assert_eq!(fixture.node.generate_times().len(), 1);
 }
 
 #[test]

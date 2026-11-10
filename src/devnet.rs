@@ -1136,11 +1136,15 @@ pub fn validate_observation(
         "host observation identity or status differs from request"
     );
     let readiness = &report["readiness"];
+    // A node without `getchainrules` passes only the narrower standard-RPC
+    // rule observation, which its report records instead of verified rules.
     ensure!(
         readiness["apiVersion"] == crate::chain::readiness::API_VERSION
             && readiness["consensusFingerprint"] == spec.consensus_fingerprint
             && readiness["role"] == spec.role
-            && readiness["effectiveRulesVerified"] == true
+            && (readiness["effectiveRulesVerified"] == true
+                || (readiness["effectiveRulesVerified"] == false
+                    && readiness["rulesEvidence"] == "standard-rpc"))
             && readiness["historyPresent"] == true
             && readiness["miningReady"] == (spec.role == "producer")
             && readiness["launchReady"] == false

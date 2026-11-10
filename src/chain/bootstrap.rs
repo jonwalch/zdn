@@ -6,7 +6,7 @@
 
 use super::artifacts::{snapshot_bundle, VerifiedBlock, VerifiedBundle};
 use super::manifest::ConsensusManifest;
-use super::readiness::PreparedRules;
+use super::readiness::{PreparedRules, RulesEvidence};
 use super::rpc::{Clock, NodeRpc, RpcError};
 use eyre::{bail, ensure, Context, ContextCompat, Result};
 use serde::{Deserialize, Serialize};
@@ -84,8 +84,10 @@ pub struct BootstrapReport {
     pub seed_tip_height: u32,
     pub seed_tip_hash: String,
     pub byte_integrity_verified: bool,
+    /// False when the node has no `inspectchainblock`.
     pub block_decoding_verified: bool,
     pub effective_rules_verified: bool,
+    pub rules_evidence: RulesEvidence,
     pub seed_history_present: bool,
     pub checkpoint_acceptance: bool,
     pub full_semantic_validation: bool,
@@ -144,10 +146,11 @@ fn load_prepared(
     rpc: &impl NodeRpc,
     budget: Budget<'_, impl Clock>,
 ) -> Result<BootstrapReport> {
-    rules
-        .verify(rpc, budget.timeout()?)
+    let before = rules
+        .verify(rpc, || budget.timeout())
         .context("verify node rules before bootstrap")?;
-    inspect_blocks(&snapshot.blocks, rpc, &budget)?;
+    let stock = before == RulesEvidence::StandardRpc;
+    let block_decoding_verified = inspect_blocks(&snapshot.blocks, &rules, stock, rpc, &budget)?;
     let initial = observe_history(&snapshot.blocks, rpc, &budget)?;
     let mut submission_attempts = 0;
     let mut submitted_blocks = 0;
@@ -161,9 +164,13 @@ fn load_prepared(
         submission_attempts += attempts;
         submitted_blocks += usize::from(attempts > 0);
     }
-    rules
-        .verify(rpc, budget.timeout()?)
+    let rules_evidence = rules
+        .verify(rpc, || budget.timeout())
         .context("verify node rules after bootstrap")?;
+    ensure!(
+        rules_evidence == before,
+        "node rule diagnostics changed during bootstrap"
+    );
     let final_state = observe_history(&snapshot.blocks, rpc, &budget)?;
     ensure!(
         final_state.present == snapshot.blocks.len(),
@@ -195,8 +202,9 @@ fn load_prepared(
         seed_tip_height: seed_tip.height,
         seed_tip_hash: seed_tip.hash.clone(),
         byte_integrity_verified: true,
-        block_decoding_verified: true,
-        effective_rules_verified: true,
+        block_decoding_verified,
+        effective_rules_verified: rules_evidence == RulesEvidence::ChainRules,
+        rules_evidence,
         seed_history_present: true,
         checkpoint_acceptance: true,
         full_semantic_validation: false,
@@ -250,24 +258,31 @@ fn check_recipe(manifest: &ConsensusManifest, blocks: &[VerifiedBlock]) -> Resul
     Ok(())
 }
 
+/// Returns false, without submitting anything, when a `stock` node (one
+/// without `getchainrules`) also has no `inspectchainblock`. Every block must
+/// still reach the best chain with its saved hash, but an undecodable block
+/// then fails only after earlier saved blocks are committed.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(skip_all, name = "chain.bootstrap.inspect_blocks")
 )]
 fn inspect_blocks(
     blocks: &[VerifiedBlock],
+    rules: &PreparedRules,
+    stock: bool,
     rpc: &impl NodeRpc,
     budget: &Budget<'_, impl Clock>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut previous = "00".repeat(32);
-    for block in blocks {
-        let response = rpc
-            .call(
-                "inspectchainblock",
-                json!([hex::encode(&block.bytes)]),
-                budget.timeout()?,
-            )
-            .context("node block inspection failed before any submission")?;
+    for (index, block) in blocks.iter().enumerate() {
+        let response = match rpc.call(
+            "inspectchainblock",
+            json!([hex::encode(&block.bytes)]),
+            budget.timeout()?,
+        ) {
+            Err(error) if stock && index == 0 && rules.falls_back(&error) => return Ok(false),
+            response => response.context("node block inspection failed before any submission")?,
+        };
         let decoded: BlockInspection =
             serde_json::from_value(response).context("invalid node block-inspection response")?;
         ensure!(
@@ -288,7 +303,7 @@ fn inspect_blocks(
         );
         previous.clone_from(&block.identity.hash);
     }
-    Ok(())
+    Ok(true)
 }
 
 struct ObservedHistory {

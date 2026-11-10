@@ -3,7 +3,7 @@
 
 use super::{
     manifest::ConsensusManifest,
-    readiness::PreparedRules,
+    readiness::{PreparedRules, RulesEvidence},
     rpc::{Clock, HttpNodeRpc, RpcError},
 };
 use eyre::{bail, ensure, ContextCompat, Result};
@@ -23,7 +23,7 @@ pub fn wait_for_rpc(
     clock: &impl Clock,
     request_timeout: Duration,
     deadline: Duration,
-) -> Result<()> {
+) -> Result<RulesEvidence> {
     wait_prepared(
         PreparedRules::new(manifest)?,
         endpoint,
@@ -33,7 +33,7 @@ pub fn wait_for_rpc(
         deadline,
         crate::rpc_limits::BodyClass::Default,
     )
-    .map(|_| ())
+    .map(|(_, evidence)| evidence)
 }
 
 #[cfg(target_os = "linux")]
@@ -58,6 +58,7 @@ pub(crate) fn wait_external(
         deadline,
         crate::rpc_limits::BodyClass::LargeHexV1,
     )
+    .map(|(client, _)| client)
 }
 
 fn wait_prepared(
@@ -68,7 +69,7 @@ fn wait_prepared(
     request_timeout: Duration,
     deadline: Duration,
     body_class: crate::rpc_limits::BodyClass,
-) -> Result<HttpNodeRpc> {
+) -> Result<(HttpNodeRpc, RulesEvidence)> {
     ensure!(
         !deadline.is_zero() && deadline <= Duration::from_secs(3600),
         "RPC startup deadline must be positive and at most 3600 seconds"
@@ -88,12 +89,12 @@ fn wait_prepared(
     };
     // The independent attempt bound also limits a stalled or faulty clock.
     for _ in 0..4096 {
-        let timeout = request_timeout.min(remaining()?);
+        let timeout = || Ok(request_timeout.min(remaining()?));
         match HttpNodeRpc::with_body_class(endpoint, cookie, body_class) {
             Ok(client) => match rules.verify(&client, timeout) {
-                Ok(()) => {
+                Ok(evidence) => {
                     remaining()?;
-                    return Ok(client);
+                    return Ok((client, evidence));
                 }
                 Err(error)
                     if matches!(

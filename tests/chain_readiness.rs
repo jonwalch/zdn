@@ -15,7 +15,7 @@ use zdn::chain::{
         BlockIdentity, Checkpoint, ConsensusManifest, FundingReceiver, FundingRecipient,
         FundingStream, ProofOfWork,
     },
-    readiness::{check_readiness, verify_rules, ReadinessOptions},
+    readiness::{check_readiness, verify_rules, ReadinessOptions, RulesEvidence},
     rpc::{Clock, NodeRpc, RpcError},
     runtime_config::NodeRole,
 };
@@ -289,10 +289,71 @@ fn rules_compare_collapsed_upgrades_and_canonical_hex_not_an_echoed_fingerprint(
     rpc.rules["rules"]["networkMagic"] = json!("A1B2C3D4");
     rpc.rules["rules"]["genesisHash"] = json!(GENESIS.to_ascii_uppercase());
     rpc.rules["rules"]["difficulty"]["targetDifficultyLimitCompact"] = json!("1F07FFFF");
-    verify_rules(&manifest, &rpc, Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        verify_rules(&manifest, &rpc, Duration::from_secs(1)).unwrap(),
+        RulesEvidence::ChainRules
+    );
     assert_eq!(rpc.methods(), vec!["getchainrules"]);
     rpc.rules = json!({"consensusFingerprint":manifest.fingerprint().unwrap()});
     assert!(verify_rules(&manifest, &rpc, Duration::from_secs(1)).is_err());
+}
+
+fn missing_method() -> RpcError {
+    RpcError::Remote {
+        code: -32601,
+        message: "Method not found".into(),
+    }
+}
+
+#[test]
+fn stock_node_without_chain_rules_is_checked_only_through_standard_rpc() {
+    let seeded = seeded_manifest();
+    let mut rpc = FakeRpc::new(&seeded);
+    rpc.hook(|call, _| (call.method == "getchainrules").then(|| Err(missing_method())));
+    let report = check_readiness(&seeded, &rpc, &FakeClock::default(), &options()).unwrap();
+    assert!(!report.effective_rules_verified);
+    assert_eq!(report.rules_evidence, RulesEvidence::StandardRpc);
+    assert!(report.history_present);
+    assert_eq!(report.tip.hash, SEED);
+    // Losing the diagnostic mid-observation is a different node, not a retry.
+    let mut rpc = FakeRpc::new(&seeded);
+    rpc.hook(|call, count| {
+        (call.method == "getchainrules" && count == 2).then(|| Err(missing_method()))
+    });
+    assert!(check_readiness(&seeded, &rpc, &FakeClock::default(), &options()).is_err());
+
+    // The startup gate on a node past genesis reads genesis from history, not
+    // the tip; an empty node reports its configured genesis as the tip.
+    let manifest = manifest();
+    let mut rpc = FakeRpc::new(&manifest);
+    rpc.info = chain_info(1, SEED);
+    rpc.hook(|call, _| (call.method == "getchainrules").then(|| Err(missing_method())));
+    assert_eq!(
+        verify_rules(&manifest, &rpc, Duration::from_secs(1)).unwrap(),
+        RulesEvidence::StandardRpc
+    );
+    assert!(rpc.methods().contains(&"getblockhash".to_owned()));
+    rpc.history.insert(0, "44".repeat(32));
+    let error = verify_rules(&manifest, &rpc, Duration::from_secs(1)).unwrap_err();
+    assert!(error.to_string().contains("genesis"), "{error}");
+
+    let mut rpc = FakeRpc::new(&manifest);
+    rpc.info["upgrades"]["37a5165b"]["activationheight"] = json!(2);
+    rpc.hook(|call, _| (call.method == "getchainrules").then(|| Err(missing_method())));
+    assert!(verify_rules(&manifest, &rpc, Duration::from_secs(1)).is_err());
+
+    // Any other rule-read failure keeps failing closed without a fallback.
+    let mut rpc = FakeRpc::new(&manifest);
+    rpc.hook(|call, _| {
+        (call.method == "getchainrules").then(|| {
+            Err(RpcError::Remote {
+                code: -32600,
+                message: "Invalid request".into(),
+            })
+        })
+    });
+    assert!(verify_rules(&manifest, &rpc, Duration::from_secs(1)).is_err());
+    assert_eq!(rpc.methods(), vec!["getchainrules"]);
 }
 
 #[test]
