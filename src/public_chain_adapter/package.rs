@@ -225,7 +225,9 @@ impl PreparedExternalChain {
         rpc: &impl crate::chain::rpc::NodeRpc,
         timeout: Duration,
     ) -> eyre::Result<()> {
-        crate::chain::readiness::PreparedRules::external(self.compiled()).verify(rpc, timeout)
+        crate::chain::readiness::PreparedRules::external(self.compiled())
+            .verify(rpc, || Ok(timeout))
+            .map(|_| ())
     }
 
     /// Wait through startup cookie creation/rotation and retain the client that

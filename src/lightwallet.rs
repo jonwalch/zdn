@@ -400,21 +400,27 @@ fn observe(
         )?;
     }
     let timeout = budget.timeout()?;
-    let rules_result = prepared.verify_rules(budget.node, timeout);
+    let rules_result = prepared.verify_rules(budget.node, || Ok(timeout));
     budget.remaining()?;
     // A lost final reply must restart the whole observation, just like other
     // node transport failures. Authentication and actual rule mismatches remain
     // fatal; the helper preserves typed RPC errors through its eyre context.
-    if let Err(error) = rules_result {
-        if matches!(
-            error.downcast_ref::<RpcError>(),
-            Some(RpcError::Transport(_))
-        ) {
-            return Err(ObservationError::Wait(
-                "waiting for node getchainrules".into(),
-            ));
+    match rules_result {
+        Ok(evidence) => ensure_fatal(
+            evidence == node_report.rules_evidence,
+            "node rule diagnostics changed during light-wallet observation",
+        )?,
+        Err(error) => {
+            if matches!(
+                error.downcast_ref::<RpcError>(),
+                Some(RpcError::Transport(_))
+            ) {
+                return Err(ObservationError::Wait(
+                    "waiting for node getchainrules".into(),
+                ));
+            }
+            return Err(error.into());
         }
-        return Err(error.into());
     }
     let final_info = budget.node("getblockchaininfo", json!([]))?;
     if final_info["blocks"].as_u64() != Some(node_tip.height.into())

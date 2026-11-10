@@ -107,6 +107,7 @@ fn wait(endpoint: &str, path: &Path, clock: &FakeClock, seconds: u64) -> eyre::R
         Duration::from_secs(1),
         Duration::from_secs(seconds),
     )
+    .map(|_| ())
 }
 
 #[test]
@@ -277,7 +278,8 @@ fn cli_startup_gate_is_read_only_and_does_not_claim_chain_readiness() {
     assert_eq!(
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         json!({
-            "apiVersion":"zdn-chain-rpc-startup/v1alpha1", "effectiveRulesVerified":true, "launchReady":false
+            "apiVersion":"zdn-chain-rpc-startup/v1alpha1", "effectiveRulesVerified":true,
+            "rulesEvidence":"chain-rules", "launchReady":false
         })
     );
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);

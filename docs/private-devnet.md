@@ -91,7 +91,8 @@ Supply these immutable inputs:
 
 - An image in `ACCOUNT.dkr.ecr.REGION.amazonaws.com/zdn/TEAM/REPOSITORY`, pinned
   by its Linux/amd64 child manifest digest. It must provide the
-  [image contract](image-contract.md), including the diagnostic RPCs.
+  [image contract](image-contract.md). Without the diagnostic RPCs, readiness
+  uses [narrower checks](bootstrap-readiness.md#nodes-without-the-diagnostics).
 - The image record, exact registry manifest bytes, and configuration blob. Do not
   reformat the two registry blobs. `zdn image verify --record image.json
   --manifest image-manifest.json --config image-config.json` checks them offline.

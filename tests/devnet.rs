@@ -1244,6 +1244,13 @@ fn host_specs_preserve_resource_reserves_and_observations_require_exact_identity
             }
         });
         devnet::validate_observation(&good, &host, &install_sha256).unwrap();
+        // A stock node passes only with its weaker rule evidence recorded.
+        let mut standard = good.clone();
+        standard["readiness"]["effectiveRulesVerified"] = json!(false);
+        standard["readiness"]["rulesEvidence"] = json!("standard-rpc");
+        devnet::validate_observation(&standard, &host, &install_sha256).unwrap();
+        standard["readiness"]["rulesEvidence"] = json!("chain-rules");
+        assert!(devnet::validate_observation(&standard, &host, &install_sha256).is_err());
         assert_eq!(host.block_interval_seconds, Some(25));
         assert_eq!(
             devnet::validate_producer_observation(&good, &host, true).is_ok(),

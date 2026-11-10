@@ -1752,7 +1752,7 @@ fn run(cli: Cli) -> Result<()> {
             command: ChainCommand::WaitRpc { manifest, rpc },
         } => {
             let manifest: ConsensusManifest = zdn::foundation::read_json(&manifest)?;
-            zdn::chain::startup::wait_for_rpc(
+            let evidence = zdn::chain::startup::wait_for_rpc(
                 &manifest,
                 &rpc.rpc_endpoint,
                 &rpc.cookie_file,
@@ -1762,7 +1762,9 @@ fn run(cli: Cli) -> Result<()> {
             )?;
             print_json(&json!({
                 "apiVersion": "zdn-chain-rpc-startup/v1alpha1",
-                "effectiveRulesVerified": true,
+                "effectiveRulesVerified":
+                    evidence == zdn::chain::readiness::RulesEvidence::ChainRules,
+                "rulesEvidence": evidence,
                 "launchReady": false
             }))
         }
